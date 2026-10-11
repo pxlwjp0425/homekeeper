@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 顶栏天气：请求 open-meteo / ipinfo.io（都是 HTTPS）。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Bing 每日壁纸：从 www.bing.com 取列表与图片（HTTPS）。
+         SET_WALLPAPER 仅当配置 wallpaper.applySystem=true 时才会用到（普通权限，装包即授予）；
+         盒子若无壁纸服务，调用失败会静默忽略。 -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+
+    <!-- 音频看门狗：把「通话类音频」从不存在的外放拉回 HDMI。
+         起因：中兴智慧生活进摄像头实时预览时会 setSpeakerphoneOn(true)，
+         而本盒子唯一的输出设备是 HDMI → 电视没声音。普通权限，装包即授予。 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- 悬浮信息条：把「时间 + 日期/农历/天气」浮在其它 App 之上（OverlayService）。
+         属于 appop 权限，侧载后默认不授予，已用 root 执行：
+         appops set com.xiaopaitech.wallpaperlauncher SYSTEM_ALERT_WINDOW allow -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- 配置文件读写：/sdcard/homekeeper/config.json。
+         用户可用电脑 / 文件管理器直接修改该文件，改完回桌面自动生效。
+         Android 10 及以下走 WRITE_EXTERNAL_STORAGE；Android 11+ 需要 MANAGE_EXTERNAL_STORAGE
+         （侧载后由 adb 授予：appops set <pkg> MANAGE_EXTERNAL_STORAGE allow）。 -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!-- 读取系统使用统计，用于「按使用频率排序」。属于 appop 权限，
+         侧载后默认不授予，已通过 root 执行：
+         appops set com.xiaopaitech.wallpaperlauncher GET_USAGE_STATS allow
+         未授权时静默降级为「仅本地点击次数 + 名称」排序。 -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+
+    <!-- Android 11 包可见性：不声明的话 queryIntentActivities 查不到别的应用 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/ic_menu_compass"
+        android:label="桌面"
+        android:requestLegacyExternalStorage="true"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <!-- 真·桌面：不透明、常驻栈底、不接受返回键 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:stateNotNeeded="true"
+            android:screenOrientation="landscape"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- 悬浮信息条：普通 Service（桌面进程常驻，无需前台服务）。
+             由 MainActivity 按 config.json 的 overlay.enabled 启停。 -->
+        <service
+            android:name=".OverlayService"
+            android:enabled="true"
+            android:exported="false" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 音频诊断（开发用）：adb 广播即可手动把通话音频推到/拉离「外放」，
+             用来验证桌面里的看门狗是否真的在起作用。见 AudioDiagReceiver 注释。 -->
+        <receiver
+            android:name=".AudioDiagReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.laopeng.homekeeper.DIAG_SPEAKER" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>
