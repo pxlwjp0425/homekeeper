@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「整理顺序」模式下正在搬动的那一格：半透明蓝底 + 加粗蓝边。
+     半透明是为了不把 GridView 的焦点选择器完全盖死。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#552A6BE0" />
+    <corners android:radius="14dp" />
+    <stroke
+        android:width="4dp"
+        android:color="#FF4C8DFF" />
+</shape>

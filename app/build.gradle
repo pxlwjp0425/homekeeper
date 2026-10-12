@@ -1,0 +1,39 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    // namespace 只用于生成 R 类，真正决定包名的是下面的 applicationId
+    namespace 'com.laopeng.homekeeper'
+    compileSdk 35
+
+    defaultConfig {
+        // 关键：借用固件启动器白名单里“已登记但未安装”的包名，
+        // 从而绕过 PackageManagerService.filterHomeApp 的品牌黑名单过滤
+        applicationId "com.xiaopaitech.wallpaperlauncher"
+        minSdk 21
+        targetSdk 30
+        versionCode 25
+        versionName "4.7"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

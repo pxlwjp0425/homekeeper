@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:orientation="vertical"
+    android:paddingLeft="46dp"
+    android:paddingRight="46dp"
+    android:paddingTop="26dp"
+    android:paddingBottom="20dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:baselineAligned="false"
+        android:orientation="horizontal"
+        android:paddingBottom="14dp">
+
+        <TextView
+            android:id="@+id/clock"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/item_bg"
+            android:focusable="true"
+            android:nextFocusDown="@id/grid_fav"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp"
+            android:text="--:--"
+            android:textColor="@color/text"
+            android:textSize="38sp" />
+
+        <TextView
+            android:id="@+id/date"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:paddingBottom="7dp"
+            android:paddingLeft="16dp"
+            android:text=""
+            android:textColor="@color/text_dim"
+            android:textSize="16sp" />
+
+        <!-- 页签顺序 = 页面顺序：首页在左，全部应用在右 -->
+        <!-- 三个标签统一 minHeight + gravity=center + layout_gravity=bottom，
+             保证「首页 / 全部应用 / 背景」的文字在同一基线上 -->
+        <TextView
+            android:id="@+id/tab_fav"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:focusable="false"
+            android:gravity="center"
+            android:minHeight="34dp"
+            android:paddingLeft="14dp"
+            android:paddingRight="14dp"
+            android:text="首页"
+            android:textColor="@color/text"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/tab_all"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:focusable="false"
+            android:gravity="center"
+            android:minHeight="34dp"
+            android:paddingLeft="14dp"
+            android:paddingRight="14dp"
+            android:text="全部应用"
+            android:textColor="@color/text"
+            android:textSize="15sp" />
+
+        <!-- 背景色入口：可聚焦，按 OK 弹出背景选择。同样 minHeight/gravity 对齐 -->
+        <TextView
+            android:id="@+id/btn_bg"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:background="@drawable/item_bg"
+            android:focusable="true"
+            android:gravity="center"
+            android:minHeight="34dp"
+            android:nextFocusDown="@id/grid_fav"
+            android:paddingLeft="14dp"
+            android:paddingRight="14dp"
+            android:text="背景"
+            android:textColor="@color/text_dim"
+            android:textSize="15sp" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <GridView
+            android:id="@+id/grid"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:descendantFocusability="blocksDescendants"
+            android:drawSelectorOnTop="false"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:horizontalSpacing="8dp"
+            android:listSelector="@drawable/item_bg"
+            android:numColumns="7"
+            android:scrollbars="none"
+            android:stretchMode="columnWidth"
+            android:verticalSpacing="10dp"
+            android:visibility="gone" />
+
+        <GridView
+            android:id="@+id/grid_fav"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:descendantFocusability="blocksDescendants"
+            android:drawSelectorOnTop="false"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:horizontalSpacing="8dp"
+            android:listSelector="@drawable/item_bg"
+            android:numColumns="5"
+            android:nextFocusUp="@id/clock"
+            android:scrollbars="none"
+            android:stretchMode="columnWidth"
+            android:verticalSpacing="40dp" />
+
+    </FrameLayout>
+
+</LinearLayout>
