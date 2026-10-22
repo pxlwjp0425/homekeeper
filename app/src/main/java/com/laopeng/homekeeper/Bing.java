@@ -69,7 +69,8 @@ final class Bing {
         String label() {
             String d = date == null ? "" : date;
             if (d.length() == 8) {
-                d = d.substring(4, 6) + "-" + d.substring(6, 8);
+                // 图池从 2010 年跨到现在，只给「10-19」会分不清是哪一年，必须带年份
+                d = d.substring(0, 4) + "-" + d.substring(4, 6) + "-" + d.substring(6, 8);
             }
             String t = (title == null || title.isEmpty()) ? copyright : title;
             if (t == null) {
@@ -175,6 +176,32 @@ final class Bing {
         return new File(dir(ctx), "bing_" + d + ".jpg");
     }
 
+    /** 找目录里该日期的任意一张壁纸（两种命名都认）；没有返回 {@code null} */
+    private static File findAnyByDate(Context ctx, String yyyymmdd) {
+        if (yyyymmdd == null || yyyymmdd.length() != 8) {
+            return null;
+        }
+        try {
+            final File[] all = dir(ctx).listFiles((d, name) -> isWallpaperName(name)
+                    && yyyymmdd.equals(dateOfName(name)));
+            if (all == null || all.length == 0) {
+                return null;
+            }
+            // 优先带标题的那张（YYYYMMDD_标题.jpg），它信息最全
+            Arrays.sort(all, (a, b) -> {
+                final boolean ta = !titleOfName(a.getName()).isEmpty();
+                final boolean tb = !titleOfName(b.getName()).isEmpty();
+                if (ta != tb) {
+                    return ta ? -1 : 1;
+                }
+                return a.getName().compareTo(b.getName());
+            });
+            return all[0].length() >= MIN_BYTES ? all[0] : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     /** 下载（本地已有完整文件则直接复用），返回本地文件；{@code keep <= 0} 时不淘汰 */
     static File download(Context ctx, Item it, boolean uhd, int keep) throws Exception {
         final File f = fileFor(ctx, it);
@@ -183,6 +210,14 @@ final class Bing {
             //noinspection ResultOfMethodCallIgnored
             f.setLastModified(System.currentTimeMillis());
             return f;
+        }
+        // 当天已经有一张带标题的图（YYYYMMDD_标题.jpg，来自外部整理库）就直接用，
+        // 否则每天自动换图都会再下一份同名不同命名的副本，列表里同一天出现两张。
+        final File byDate = findAnyByDate(ctx, it.date);
+        if (byDate != null) {
+            //noinspection ResultOfMethodCallIgnored
+            byDate.setLastModified(System.currentTimeMillis());
+            return byDate;
         }
         final String url = uhd ? uhd(it.url) : it.url;
         final byte[] data = httpGet(url);
@@ -204,19 +239,89 @@ final class Bing {
     }
 
     /**
+     * 目录里这两种命名都算壁纸，缺一不可：
+     *
+     * <ul>
+     *   <li>{@code bing_YYYYMMDD.jpg} / {@code bing_YYYYMMDD_01.jpg} —— App 自己下载的，没有标题；</li>
+     *   <li>{@code YYYYMMDD_标题.jpg} / {@code YYYYMMDD.jpg} —— 外部导入的带标题库，
+     *       标题直接藏在文件名里（见 {@link #titleOfName}）。</li>
+     * </ul>
+     */
+    static boolean isWallpaperName(String name) {
+        if (name == null || !name.toLowerCase(Locale.ROOT).endsWith(".jpg")) {
+            return false;
+        }
+        return dateOfName(name).length() == 8;
+    }
+
+    /** 从文件名取 {@code YYYYMMDD}（两种命名都认）；取不到返回空串 */
+    static String dateOfName(String name) {
+        if (name == null) {
+            return "";
+        }
+        final int off = name.startsWith("bing_") ? 5 : 0;
+        if (name.length() < off + 8) {
+            return "";
+        }
+        for (int i = off; i < off + 8; i++) {
+            if (!Character.isDigit(name.charAt(i))) {
+                return "";
+            }
+        }
+        return name.substring(off, off + 8);
+    }
+
+    /**
+     * 从文件名取标题：{@code 20210105_玻利维亚…鹦鹉.jpg} → {@code 玻利维亚…鹦鹉}。
+     *
+     * <p>没有下划线（{@code 20210105.jpg}）、或下划线后是纯数字（{@code bing_20210105_01.jpg}
+     * 这种同日变体编号）时返回空串 —— 后者是「同一天的第二张图」，它没有独立标题，
+     * 硬套主图标题就是张冠李戴。</p>
+     */
+    static String titleOfName(String name) {
+        final String d = dateOfName(name);
+        if (d.isEmpty()) {
+            return "";
+        }
+        final int off = name.startsWith("bing_") ? 5 : 0;
+        final int sep = off + 8;
+        if (name.length() <= sep + 1 || name.charAt(sep) != '_') {
+            return "";
+        }
+        String t = name.substring(sep + 1);
+        if (t.toLowerCase(Locale.ROOT).endsWith(".jpg")) {
+            t = t.substring(0, t.length() - 4);
+        }
+        if (t.isEmpty()) {
+            return "";
+        }
+        boolean allDigit = true;
+        for (int i = 0; i < t.length(); i++) {
+            if (!Character.isDigit(t.charAt(i))) {
+                allDigit = false;
+                break;
+            }
+        }
+        return allDigit ? "" : t.trim();
+    }
+
+    /**
      * 本地已缓存的图，按日期<b>从新到旧</b>排。
      *
-     * <p>文件名是 {@code bing_YYYYMMDD.jpg}，所以按名字倒序排就是时间倒序
-     * （个别按 URL 哈希命名的 {@code bing_xNNNN.jpg} 排在最后，无妨）。</p>
+     * <p>先按文件名里的 {@code YYYYMMDD} 倒序，同一天再按名字倒序 —— 这样
+     * {@code bing_20210105.jpg} 和 {@code 20210105_标题.jpg} 能正确混排
+     * （直接按名字排的话，{@code bing_} 开头的全挤到最后）。</p>
      */
     static List<File> cached(Context ctx) {
-        final File[] all = dir(ctx).listFiles(
-                (d, name) -> name.startsWith("bing_") && name.endsWith(".jpg"));
+        final File[] all = dir(ctx).listFiles((d, name) -> isWallpaperName(name));
         final List<File> out = new ArrayList<>();
         if (all != null) {
             out.addAll(Arrays.asList(all));
         }
-        out.sort((a, b) -> b.getName().compareTo(a.getName()));
+        out.sort((a, b) -> {
+            final int c = dateOfName(b.getName()).compareTo(dateOfName(a.getName()));
+            return c != 0 ? c : b.getName().compareTo(a.getName());
+        });
         return out;
     }
 
@@ -226,8 +331,7 @@ final class Bing {
             return;
         }
         try {
-            final File[] all = dir(ctx).listFiles(
-                    (d, name) -> name.startsWith("bing_") && name.endsWith(".jpg"));
+            final File[] all = dir(ctx).listFiles((d, name) -> isWallpaperName(name));
             if (all == null || all.length <= max) {
                 return;
             }

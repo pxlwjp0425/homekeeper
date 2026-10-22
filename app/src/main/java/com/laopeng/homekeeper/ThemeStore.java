@@ -1,5 +1,6 @@
 package com.laopeng.homekeeper;
 
+import android.app.Activity;
 import android.content.Context;
 import android.os.Environment;
 import android.util.Log;
@@ -41,13 +42,12 @@ final class ThemeStore {
             + "\n             \"favRowSpacingDp\": 40, \"allRowSpacingDp\": 10,"
             + "\n             \"favColSpacingDp\": 8, \"allColSpacingDp\": 8,"
             + "\n             \"iconSizeDp\": 160, \"iconPadBottomDp\": 12 },"
-            + "\n  \"icon\": { \"sizeRatio\": 0.88, \"cornerRatio\": 0.22,"
+            + "\n  \"icon\": { \"sizeRatio\": 0.88, \"cornerRatio\": 0.3,"
             + "\n            \"strokeDp\": 1.5, \"strokeColor\": \"#33FFFFFF\" },"
             + "\n  \"text\": { \"clockSizeSp\": 38, \"dateSizeSp\": 16, \"tabSizeSp\": 15,"
             + "\n             \"nameSizeSp\": 16, \"namePadTopDp\": 10 },"
             + "\n  \"topbar\": { \"showLunar\": true, \"showWeather\": true,"
             + "\n              \"city\": \"\", \"refreshMinutes\": 30 },"
-            + "\n  \"audio\": { \"keepHdmi\": true },"
             + "\n  \"overlay\": { \"enabled\": true, \"marginDp\": 24, \"clockSizeSp\": 28,"
             + "\n               \"dateSizeSp\": 14, \"bgAlpha\": 0, \"shadow\": true },"
             + "\n  \"wallpaper\": { \"mode\": \"color\", \"bingMkt\": \"zh-CN\","
@@ -85,7 +85,7 @@ final class ThemeStore {
     /** 图标统一样式：图标边长 ÷ 格子边长（越小留白越多） */
     float iconSizeRatio = 0.88f;
     /** 图标圆角半径 ÷ 图标边长（0.5 = 胶囊；0 = 直角） */
-    float iconCornerRatio = 0.22f;
+    float iconCornerRatio = 0.3f;
     /** 图标描边宽度 dp（0 = 不描边） */
     float iconStrokeDp = 1.5f;
     /** 图标描边颜色（建议半透明，深底浅底都好看） */
@@ -101,19 +101,21 @@ final class ThemeStore {
     boolean showWeather = true;
     /** 天气地点：空 / "auto" = 按公网 IP 自动定位；也可写城市名（福州）或坐标（26.06,119.31） */
     String weatherCity = "";
+    /**
+     * 小米天气 locationKey（如 {@code weathercn:101230202} = 福建厦门·同安区）。
+     * 非空 → 桌面顶栏改走「天气 TV」App 同一套小米接口，两边数据完全一致；
+     * 空 → 沿用 open-meteo（按 city / IP 定位）。
+     */
+    String weatherKey = MiWeather.KEY_TONGAN;
     /** 天气刷新间隔（分钟） */
     int weatherRefreshMin = 30;
 
-    // ---- 音频（v4.7）：把「通话类音频」从不存在的外放拉回 HDMI ----
-    /**
-     * 是否开启音频看门狗。默认 {@code true}。
-     *
-     * <p>盒子唯一的输出设备是 HDMI Out；某些 App（实测中兴智慧生活进摄像头实时预览）
-     * 会 {@code setSpeakerphoneOn(true)}，把 STREAM_VOICE_CALL 送进物理上不存在的「扬声器」
-     * → 电视没声。开着的话，桌面每秒纠正一次。</p>
-     */
-    boolean audioKeepHdmi = true;
+    /** 交给 {@link Sky} 的「地点串」：配了 locationKey 就用它（走小米），否则用城市名/IP。 */
+    String skyPlace() {
+        return (weatherKey != null && !weatherKey.isEmpty()) ? weatherKey : weatherCity;
+    }
 
+    // ---- 音频（v4.7）：把「通话类音频」从不存在的外放拉回 HDMI ----
     // ---- 悬浮信息条（v4.7）：把「时间 + 日期/农历/天气」浮在其它 App 之上 ----
     /** 是否显示悬浮信息条（需 {@code SYSTEM_ALERT_WINDOW} 授权，见 OverlayService） */
     boolean ovEnabled = true;
@@ -167,36 +169,58 @@ final class ThemeStore {
         return file(null);
     }
 
-    /**
-     * 解析配置文件路径。传 ctx 时会**实际探测可写性**：
-     * 先试外置 {@code /sdcard/homekeeper/config.json}，写不了就回退到
-     * App 私有目录 {@code <files>/config.json}（界面编辑仍可用）。
+    /** 解析配置文件路径。
+     *
+     * <p>优先级（实测可写性，不靠 {@code canWrite()}——本机 fuse 对它返回 EPERM）：
+     * <ol>
+     *   <li>外置 {@code /sdcard/homekeeper/config.json}：能<b>直接落盘</b>就优先用它
+     *       （电脑/文件管理器可直接改）。</li>
+     *   <li>外置目录打不开（如极光盒子 fuse/SELinux 对 App 进程 EPERM/EACCES，
+     *       且 chmod/chown 被强制回写改不动）→ 回退到 App 私有目录
+     *       {@code <files>/homekeeper/config.json}（SELinux 标签自动是本 App 域，
+     *       读写 100% 可保证，界面编辑仍可用）。</li>
+     * </ol>
+     * 探测只在首次做一次并缓存，避免每 15s 重载都开目录。
      */
     static File file(Context ctx) {
         File ext = new File(new File(Environment.getExternalStorageDirectory(), DIR_NAME), FILE_NAME);
         if (ctx == null) {
             return ext;
         }
-        // 外置可写就用外置
-        try {
-            File d = ext.getParentFile();
-            if (d != null && !d.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                d.mkdirs();
+        if (ctx instanceof Activity) {
+            // 直接落盘探测：能真正打开外置目录才用外置，否则退回私有目录
+            if (!sDirProbeDone) {
+                try {
+                    new File(Environment.getExternalStorageDirectory(), DIR_NAME).mkdirs();
+                    File probe = new File(Environment.getExternalStorageDirectory(),
+                            DIR_NAME + "/.writeprobe_" + Long.toString(System.currentTimeMillis(), 36));
+                    java.io.FileOutputStream fo = new java.io.FileOutputStream(probe, true);
+                    fo.close();
+                    probe.delete();
+                    sUseExtDir = true;
+                } catch (Throwable ignored) {
+                    sUseExtDir = false;   // 外置打不开 → 用私有目录
+                }
+                sDirProbeDone = true;
             }
-            if (d != null && d.isDirectory() && d.canWrite()) {
+            if (sUseExtDir) {
                 return ext;
             }
-        } catch (Throwable ignored) {
+            // 私有目录：getFilesDir() 已含 /files，再挂一级 homekeeper 子目录避免撞别的文件
+            return new File(ctx.getFilesDir(), DIR_NAME + "/" + FILE_NAME);
         }
-        // 回退：App 私有目录
-        return new File(ctx.getFilesDir(), FILE_NAME);
+        return ext;
     }
 
     /** 外置配置目录（用于提示用户去哪改文件） */
     static File dir() {
         return new File(Environment.getExternalStorageDirectory(), DIR_NAME);
     }
+
+    /** 缓存：是否已探测外置目录可写性 */
+    private static boolean sDirProbeDone = false;
+    /** 探测结果：外置 /sdcard/homekeeper 能否直接落盘（本机 fuse 可写才为 true） */
+    private static boolean sUseExtDir = true;
 
     /** 当前实际生效的配置路径文本（供界面提示） */
     static String pathText(Context ctx) {
@@ -217,6 +241,8 @@ final class ThemeStore {
                 writeFile(f, DEFAULT_JSON);
             }
             json = readFile(f);
+            android.util.Log.i(TAG, "load " + f.getAbsolutePath()
+                    + " exists=" + f.exists() + " len=" + (json == null ? -1 : json.length()));
             // 老版本配置文件没有 topbar 段 → 补一段写回去，用户才有地方改
             json = migrate(f, json);
         } catch (Throwable t) {
@@ -242,7 +268,7 @@ final class ThemeStore {
             JSONObject o = new JSONObject(json);
             JSONObject def = new JSONObject(DEFAULT_JSON);
             boolean changed = false;
-            for (String key : new String[]{"topbar", "wallpaper", "audio", "overlay"}) {
+            for (String key : new String[]{"topbar", "wallpaper", "overlay"}) {
                 final JSONObject d = def.optJSONObject(key);
                 if (d == null) {
                     continue;
@@ -333,12 +359,11 @@ final class ThemeStore {
                 if (ct != null) {
                     weatherCity = ct;
                 }
+                String lk = tb.optString("locationKey", null);
+                if (lk != null) {
+                    weatherKey = lk.trim();
+                }
                 weatherRefreshMin = tb.optInt("refreshMinutes", weatherRefreshMin);
-            }
-
-            JSONObject au = o.optJSONObject("audio");
-            if (au != null) {
-                audioKeepHdmi = au.optBoolean("keepHdmi", audioKeepHdmi);
             }
 
             JSONObject ov = o.optJSONObject("overlay");
@@ -505,12 +530,9 @@ final class ThemeStore {
             tb.put("showLunar", showLunar);
             tb.put("showWeather", showWeather);
             tb.put("city", weatherCity);
+            tb.put("locationKey", weatherKey);
             tb.put("refreshMinutes", weatherRefreshMin);
             o.put("topbar", tb);
-
-            JSONObject au = new JSONObject();
-            au.put("keepHdmi", audioKeepHdmi);
-            o.put("audio", au);
 
             JSONObject ov = new JSONObject();
             ov.put("enabled", ovEnabled);
@@ -554,7 +576,9 @@ final class ThemeStore {
     }
 
     /** 把当前配置写回文件（供界面保存按钮调用） */
-    boolean save(Context ctx, String jsonText) {
+    boolean save(Context ctx, String raw) {
+        // 保留原文件里的 _说明 / _参数名 注释键（App 自己 toJson 时不带它们）
+        final String jsonText = keepDocs(ctx, raw);
         try {
             writeFile(file(ctx), jsonText);
             // 写成功后立刻重新解析，让界面无副作用地拿到新值
@@ -562,9 +586,96 @@ final class ThemeStore {
             lastError = null;
             return true;
         } catch (Throwable t) {
+            // 本机 fuse 对 App 进程写 /sdcard 返回 EPERM（scoped storage 判定），
+            // 但 shell 身份可以写，所以绕道本地 adb(5555) 用 cat 落盘。
+            // 调用方可能就在主线程（换壁纸、切主题等），直接做网络会抛 NetworkOnMainThreadException，
+            // 因此主线程场景下丢到子线程执行并同步等结果。
+            boolean ok;
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                final boolean[] r = {false};
+                Thread th = new Thread(() -> r[0] = saveViaAdb(ctx, jsonText), "cfg-save-adb");
+                th.start();
+                try {
+                    th.join(8000);
+                } catch (InterruptedException ignored) {
+                }
+                ok = r[0];
+            } else {
+                ok = saveViaAdb(ctx, jsonText);
+            }
+            if (ok) {
+                parse(jsonText);
+                lastError = null;
+                Log.i(TAG, "saved via adb shell fallback");
+                return true;
+            }
             lastError = "保存失败：" + t;
             return false;
         }
+    }
+
+    /**
+     * 把磁盘上原配置里的 {@code _说明} / {@code _参数名} 注释键合并进新内容，
+     * 这样 App 自己回写（换壁纸、切主题）也不会把用户看到的说明冲掉。
+     */
+    private String keepDocs(Context ctx, String jsonText) {
+        try {
+            String old = readFile(file(ctx));
+            if (old == null || !old.contains("_说明")) {
+                return jsonText;
+            }
+            JSONObject oldO = new JSONObject(old);
+            JSONObject newO = new JSONObject(jsonText);
+            java.util.Iterator<String> segs = oldO.keys();
+            while (segs.hasNext()) {
+                String seg = segs.next();
+                JSONObject os = oldO.optJSONObject(seg);
+                JSONObject ns = newO.optJSONObject(seg);
+                if (os == null || ns == null) {
+                    continue;
+                }
+                java.util.Iterator<String> ks = os.keys();
+                while (ks.hasNext()) {
+                    String k = ks.next();
+                    if (k.startsWith("_") && !ns.has(k)) {
+                        ns.put(k, os.opt(k));
+                    }
+                }
+            }
+            return newO.toString(2);
+        } catch (Throwable t) {
+            return jsonText;
+        }
+    }
+
+    /** adb 兜底写盘：直接覆盖目标文件，再单独 chmod 666，最后校验字节数一致。 */
+    private boolean saveViaAdb(Context ctx, String jsonText) {
+        try {
+            String p = file(ctx).getAbsolutePath();
+            // 不用 `cat > p.tmp && chmod && mv`：CLSE 后连接立即关闭，
+            // 后续的 chmod/mv 会被 SIGHUP 打断，文件永远换不过去。
+            boolean ok = AdbShell.execWithInput("cat > " + p, jsonText);
+            if (!ok) {
+                return false;
+            }
+            // 单独一次命令补权限：shell 写出来的是 600，必须放开让 App 能读、下次还能写
+            AdbShell.exec("chmod 666 " + p);
+            int expect = jsonText.getBytes("UTF-8").length;
+            for (int i = 0; i < 16; i++) {
+                try {
+                    Thread.sleep(250);
+                } catch (InterruptedException ignored) {
+                }
+                String back = readFile(file(ctx));
+                if (back != null && Math.abs(back.getBytes("UTF-8").length - expect) <= 4) {
+                    return true;
+                }
+            }
+            Log.w(TAG, "saveViaAdb verify failed, expect=" + expect);
+        } catch (Throwable t) {
+            Log.w(TAG, "saveViaAdb failed: " + t);
+        }
+        return false;
     }
 
     /** 把磁盘上当前的内容原样读出来（供编辑框显示） */

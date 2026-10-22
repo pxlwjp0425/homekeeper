@@ -6,10 +6,11 @@
 
 - 工程：零依赖 AGP 8.13.2，`JAVA_HOME=/d/dev/jdk-21.0.12.1+1`，`GRADLE_USER_HOME=/d/dev/gradle-home`，gradle-8.14.3
 - 包名 `com.xiaopaitech.wallpaperlauncher` / 主类 `com.laopeng.homekeeper.MainActivity`
-- 产物：本地 `dist/` 按版本归档（**构建产物不入库**，请自行构建）；当前 **v4.7**（versionCode 25）
+- 产物：本地 `dist/` 按版本归档（**构建产物不入库**，请自行构建）；当前 **v4.10.1**（versionCode 37）
 - 源码：`app/src/main/java/com/laopeng/homekeeper/` —— 入口 `MainActivity`，其余
   `ThemeStore`(配置模型) `Bing`(每日壁纸) `Sky`/`Lunar`(天气与农历) `OverlayService`(悬浮信息条)
   `ScrollPager`(翻页) `AppAdapter`/`FavAdapter`(网格) `BootReceiver` `AudioDiagReceiver` `Theme` `Target` `AppEntry`
+  `RecStateReceiver`(接收录屏状态广播)
 - 签名：**debug keystore**（`~/.android/debug.keystore`）→ 构建 `assembleDebug` 即可原地升级；
   设备端 `base.apk` 的 `CERT.RSA` md5 = `88e2e48f58e58cb5f6965358e8447b76`，换签名会导致
   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`（而重装桌面有开机死锁风险，见文末）
@@ -777,6 +778,45 @@ v.getLayoutParams().height = itemH;
 成品 `dist/homekeeper-v4.2-uniform-icons.apk`。
 ⚠️ 遗留：酷喵 / 百度网盘 / 115生活 的图标**自带不透明留白**（没有透明像素可裁），程序侧无法再归一。
 
+## v4.9.1：移除音频看门狗 / 音频诊断（vc28）
+
+**起因**：音频设置（`audio.keepHdmi` 看门狗、`AudioDiagReceiver` 诊断、`MODIFY_AUDIO_SETTINGS` 权限）
+已不再需要，整体删除，避免其每秒 `setSpeakerphoneOn(false)` 干预系统音频状态。
+
+**删除项**：
+- `ThemeStore.java`：`audioKeepHdmi` 字段、`DEFAULT_JSON` 的 `audio` 段、`load()`/`save()` 的 audio 读写
+- `MainActivity.java`：`pullCommAudioToHdmi()`、`audioGuard` Runnable、`AUDIO_GUARD_MS` 常量、
+  `audioGuardWarned` 字段、`onResume`/`onDestroy` 里对 audioGuard 的调度、`AudioManager` import
+- `AudioDiagReceiver.java`：整文件删除（调试 speakerphone 的 receiver）
+- `AndroidManifest.xml`：`MODIFY_AUDIO_SETTINGS` 权限、`DIAG_SPEAKER` receiver 注册
+- 配置文件 `/sdcard/homekeeper/config.json`：`"audio": {...}` 整节删除
+
+**验证**：编译 29s 通过；装机 `versionName=4.9.1 / versionCode=28`；logcat 中
+`audioGuard / setSpeakerphone / MODIFY_AUDIO / DIAG_SPEAKER` 关键词零命中，确认音频功能彻底移除。
+
+## v4.9.0：顶栏天气改用「天气 TV」同源小米接口（vc27）
+
+**起因**：用户要求「桌面固定显示同安天气，且用天气 App 的数据」。
+实测两个数据源会打架 —— 2026-10-17 10:45 同安：**小米「晴 30℃」 vs open-meteo「多云 32℃」**。
+
+**做法**：新增 `MiWeather.java`（小米 `weatherapi.market.xiaomi.com`，appKey+sign 与天气 App 完全一致），
+配置项 `topbar.locationKey` 非空时 `Sky` 改走小米接口；`Sky` 只是把结果写进原有 prefs 键（`desc`/`temp`），
+**顶栏/悬浮条的渲染代码一行没动**。
+
+- 默认 `topbar.locationKey = "weathercn:101230202"`（福建厦门·**同安区**，坐标 24.736/118.144）。
+- ⚠️ **小米接口必须带匹配的经纬度**：只传 `locationKey` 会返回 `errCode:5 Param latitude error!`。
+  换城市要同时改 `locationKey` + 代码里的 `MiWeather.TONGAN_LAT/LON`（目前只按同安写死）。
+- ⚠️ **天气码两套不能混**：小米 `wxCode` ≠ open-meteo 的 WMO `weather_code`。
+  `MiWeather.name()` **逐条照抄天气 App 的 `Wx.name()`**，否则同一个码两边文案会不一样。
+- **兜底**：小米接口失败 → 自动退回 open-meteo 的固定同安坐标（`MiWeather.TONGAN_LAT/LON`），顶栏不会空。
+- 想换回 open-meteo：把 `topbar.locationKey` 设为 `""`，再按 `topbar.city`（内置城市表）或 `auto`（IP 定位）走。
+
+**实测**（极光盒子 v4.9.0 装机后）：
+```
+HKDBG: sky mi ok: 晴 30℃ (高31 低22 pub=2026-10-17T10:54:12+08:00 key=weathercn:101230202)
+截图顶栏：10月17日 星期六 农历九月初八 晴 30℃
+```
+
 ## v4.3：顶栏加农历 + 本地天气（vc19）
 
 顶栏格式：`HH:mm` + `M月d日 星期X 农历X月X 天气 温度`。
@@ -955,5 +995,68 @@ v.getLayoutParams().height = itemH;
 
 - 成品包：`dist/homekeeper-v4.7-bing-auto-daily.apk`（vc23 / v4.7，含轮播）
 
-> **版本号约定（v4.7 起）**：小改动**并入当前版本、不单独升号**；
-> 攒够一批功能、或出现配置/行为不兼容时才 +1。别再一天里 4.5 → 4.6 → 4.7 这样连号。
+> **版本号约定（2026-10-13 起，全项目统一）**：一律三段式 **`x.y.z`**，按改动量分三级 ——
+> **大版本 x**＝不兼容 / 架构级 / 大改版（→ `x+1.0.0`）；**中版本 y**＝新增功能（→ `x.y+1.0`）；
+> **小版本 z**＝修 bug / 微调 / 文案（→ `x.y.z+1`）。
+> 升版**必须同步三处**：`app/build.gradle` 的 `versionName`、`versionCode`（继续 +1 整数递增，Android 靠它判升级）、
+> README 的版本历史。老的两段式已归一（`4.7` → `4.8.0`）。别一天连号刷版本，但改了东西就一定要升。
+
+## v4.8.0：录制中悬浮层自动收起（vc26）
+
+**起因**：电视录屏 App 反馈「录出来的视频里带悬浮球和时间/天气条」。同期的 `tv-recorder` v1.2.0 已把
+自己的悬浮球改成录制期间全透明（`View.setAlpha(0)`，命中测试照旧 → 看不见但仍可点停止）。
+
+**这轮做的事**（接收方一侧）：
+
+- 新增 `RecStateReceiver`：收广播 `com.xiaopaitech.tvrecorder.REC_STATE`（`--ez on true/false`）。
+  这是**跨 App** 广播，所以 API 33+ 注册时必须带 `Context.RECEIVER_EXPORTED`；Android 8+ 收得到是因为
+  录屏侧用了**显式 `setPackage` 定向发送**（不带 `setPackage` 的隐式广播会被拦）。
+- 收到 `on=true` → **桌面顶栏的时钟/天气调成 `alpha=0`**（用 alpha 而非 `GONE`：布局与遥控器焦点链原封不动，
+  免得录制中焦点断层）；**`OverlayService` 的悬浮信息条直接 `GONE`**。
+- 收到 `on=false` → 全部恢复。**页签不动**，否则录制中回到桌面就没法翻页。
+- **心跳 + 超时自愈**：录屏侧录制中每 20 秒补发一次「还在录」；本侧 **90 秒**收不到就当已结束自动恢复显示。
+  录屏进程被系统杀掉时收不到停录通知，靠这个兜底，免得浮层永远回不来。
+- `OverlayService.isRecording()` 带心跳超时判断，供顶栏查询。
+
+**实现要点**：`MediaProjection` 抓的是**屏幕合成之后**的画面，只要窗口还画着就必然入镜 ——
+`FLAG_SECURE` 只会变成**黑块**，`SurfaceControl.setSkipScreenshot` 是 @hide 且普通 App 拿不到自己窗口的句柄，
+所以**没有 API 能单独把一层挖掉**，只能「录的时候各自躲开」。
+
+**实测**（极光盒子）：录 65 秒 → ffmpeg 抽帧，`t=0.05s`（**第一帧**）起悬浮球与时钟/天气均已消失，
+切到星火电视那一帧也无任何浮层；停录后全部恢复。
+
+- 成品包：`dist/homekeeper-v4.8.0-rec-hide.apk`（vc26 / v4.8.0）
+
+## 壁纸库的两种文件名（v4.10.1）
+
+本地池里同时存在两种命名，App 都认：
+
+| 命名 | 来源 | 标题 |
+|---|---|---|
+| `bing_YYYYMMDD.jpg` / `bing_YYYYMMDD_01.jpg` | App 自己从 Bing 接口下载 | 无（同日变体 `_01` 也没有独立标题） |
+| `YYYYMMDD_标题.jpg` / `YYYYMMDD.jpg` | 外部导入的整理库（如 `WebDAV-fnos/资料备份/BingWallpapers-分类`） | **文件名里就带标题** |
+
+列表显示时的标题优先级：**文件名 > Bing 官方接口 > 只显示日期**。
+Bing 接口只覆盖最近 16 天，所以历史图以前都是裸日期；换成带标题的整理库后
+8933 张能直接显示名字。
+
+关键实现（`Bing.java`）：
+- `isWallpaperName()` —— 两种命名都算壁纸，`cached()` / `prune()` 都用它
+- `dateOfName()` —— 取 `YYYYMMDD`，`bing_` 前缀会跳过 5 个字符
+- `titleOfName()` —— 取 `YYYYMMDD_` 之后的标题；下划线后是纯数字（`_01`）视为无标题
+- `cached()` 排序：先按日期倒序、同日期再按名字倒序（直接按名字排会让 `bing_` 全挤到最后）
+- `download()` 里 `findAnyByDate()`：当天已有带标题的图就直接复用，不再下一份副本
+
+### 导入新库时必须做的两步（在盒子上）
+
+```sh
+D=/data/data/com.xiaopaitech.wallpaperlauncher/files/bing
+chown -R u0_a75:u0_a75 "$D"     # ⚠️ App uid 是 10075，不是猜的那个
+restorecon -RF "$D"             # ⚠️ 从 /data/local/tmp mv 过来的文件 SELinux 上下文缺 c75，
+                                #    App 会读不到，表现是壁纸一片黑
+chmod 771 "$D"; chmod 644 "$D"/*.jpg
+```
+
+漏了 `restorecon`，文件权限看着全对，但 App 就是读不了；漏了 uid，`listFiles()`
+直接返回空。两个都踩过。
+

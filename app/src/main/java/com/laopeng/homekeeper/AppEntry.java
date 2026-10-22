@@ -8,6 +8,10 @@ final class AppEntry {
     String cls;
     String label;
     Bitmap icon;
+    /** 显示层二次裁过圆角的缓存（避免每帧重裁） */
+    Bitmap iconRounded;
+    /** iconRounded 对应的圆角比例，配置变了要重裁 */
+    float iconRoundedRatio;
     boolean leanback;
     /** 它自己也是一个桌面（Launcher）：排序时统一置底，避免"桌面里排桌面" */
     boolean isLauncher;

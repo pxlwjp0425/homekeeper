@@ -1,0 +1,124 @@
+{
+  "tabs": {
+    "home": "首页",
+    "all": "全部应用",
+    "bg": "设置"
+  },
+  "grid": {
+    "favColumns": 7,
+    "allColumns": 8,
+    "favRowSpacingDp": 40,
+    "allRowSpacingDp": 10,
+    "favColSpacingDp": 8,
+    "allColSpacingDp": 8,
+    "iconSizeDp": 160,
+    "iconPadBottomDp": 12
+  },
+  "icon": {
+    "sizeRatio": 0.8799999952316284,
+    "cornerRatio": 0.2199999988079071,
+    "strokeDp": 1.5,
+    "strokeColor": "#33FFFFFF"
+  },
+  "text": {
+    "clockSizeSp": 64,
+    "dateSizeSp": 16,
+    "tabSizeSp": 15,
+    "nameSizeSp": 16,
+    "namePadTopDp": 10
+  },
+  "topbar": {
+    "showLunar": true,
+    "showWeather": true,
+    "city": "厦门同安",
+    "refreshMinutes": 30
+  },
+  "audio": {
+    "keepHdmi": true
+  },
+  "wallpaper": {
+    "mode": "bing",
+    "bingMkt": "zh-CN",
+    "bingUhd": false,
+    "dim": 40,
+    "applySystem": false,
+    "autoDaily": true,
+    "rotateMinutes": 5,
+    "rotatePool": 0
+  },
+  "themes": [
+    {
+      "name": "深空黑",
+      "color": "#0E1116"
+    },
+    {
+      "name": "石墨灰",
+      "color": "#23262B"
+    },
+    {
+      "name": "午夜蓝",
+      "color": "#10243E"
+    },
+    {
+      "name": "松林绿",
+      "color": "#123027"
+    },
+    {
+      "name": "云母白",
+      "color": "#EDEFF2"
+    },
+    {
+      "name": "星紫",
+      "top": "#07040F",
+      "bottom": "#4A2E86"
+    },
+    {
+      "name": "暮霞",
+      "top": "#1A0805",
+      "bottom": "#8A3A1E"
+    },
+    {
+      "name": "深海青",
+      "top": "#02161C",
+      "bottom": "#0E6B72"
+    },
+    {
+      "name": "品红夜",
+      "top": "#17030C",
+      "bottom": "#8A2050"
+    },
+    {
+      "name": "石墨",
+      "top": "#0B0D12",
+      "bottom": "#3A4150"
+    },
+    {
+      "name": "暖沙",
+      "top": "#6B4520",
+      "bottom": "#FFE2BE"
+    },
+    {
+      "name": "薄荷雾",
+      "top": "#3A8A96",
+      "bottom": "#BFEFE6"
+    },
+    {
+      "name": "海雾蓝",
+      "top": "#041018",
+      "bottom": "#1E7FA8"
+    },
+    {
+      "name": "配色 14",
+      "top": "#0E1116",
+      "bottom": "#6B4520"
+    }
+  ],
+  "overlay": {
+    "enabled": true,
+    "marginDp": 24,
+    "clockSizeSp": 24,
+    "dateSizeSp": 10,
+    "bgAlpha": 15,
+    "shadow": true
+  }
+}

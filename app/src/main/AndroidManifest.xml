@@ -12,11 +12,6 @@
          盒子若无壁纸服务，调用失败会静默忽略。 -->
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
 
-    <!-- 音频看门狗：把「通话类音频」从不存在的外放拉回 HDMI。
-         起因：中兴智慧生活进摄像头实时预览时会 setSpeakerphoneOn(true)，
-         而本盒子唯一的输出设备是 HDMI → 电视没声音。普通权限，装包即授予。 -->
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-
     <!-- 悬浮信息条：把「时间 + 日期/农历/天气」浮在其它 App 之上（OverlayService）。
          属于 appop 权限，侧载后默认不授予，已用 root 执行：
          appops set com.xiaopaitech.wallpaperlauncher SYSTEM_ALERT_WINDOW allow -->
@@ -33,6 +28,11 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- 开机自检显示密度：本机 ROM 重启会清掉 display_density_forced，需 App 启动时写回 -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <!-- wm density 内部会以 USER_CURRENT(-2) 调 WMS，App 身份需要跨用户权限 -->
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS" />
 
     <!-- 读取系统使用统计，用于「按使用频率排序」。属于 appop 权限，
          侧载后默认不授予，已通过 root 执行：
@@ -98,14 +98,14 @@
             </intent-filter>
         </receiver>
 
-        <!-- 音频诊断（开发用）：adb 广播即可手动把通话音频推到/拉离「外放」，
-             用来验证桌面里的看门狗是否真的在起作用。见 AudioDiagReceiver 注释。 -->
+        <!-- 录屏状态（广播来自录屏 App）：录制期间把悬浮信息条 + 顶栏时钟/天气收起来，
+             免得被一起录进视频里。见 RecStateReceiver 注释。 -->
         <receiver
-            android:name=".AudioDiagReceiver"
+            android:name=".RecStateReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.laopeng.homekeeper.DIAG_SPEAKER" />
+                <action android:name="com.xiaopaitech.tvrecorder.REC_STATE" />
             </intent-filter>
         </receiver>
 

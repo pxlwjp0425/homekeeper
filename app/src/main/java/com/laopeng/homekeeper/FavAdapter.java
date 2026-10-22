@@ -49,6 +49,10 @@ final class FavAdapter extends BaseAdapter {
     private int nameSizeSp = 16;
     /** 应用名上方留白（dp） */
     private int namePadTopDp = 10;
+    /** 临时诊断：前 3 张裁好的图落盘 */
+    private static int DUMP_R = 0;
+    /** 图标圆角比例（来自配置 icon.cornerRatio，0 = 直角，0.5 = 圆形） */
+    private float cornerRatio = 0.3f;
     /** 「整理顺序」模式下正在被搬动的槽位，-1 = 不在整理 */
     private int arrangePos = -1;
 
@@ -87,6 +91,65 @@ final class FavAdapter extends BaseAdapter {
         this.namePadTopDp = namePadTopDp;
         notifyDataSetChanged();
         return slotsChanged;
+    }
+
+    /** 图标圆角比例变化时调用（显示层直接按 View 轮廓裁剪，保证一定是圆角） */
+    void setCornerRatio(float r) {
+        if (r < 0f) {
+            r = 0f;
+        }
+        if (r > 0.5f) {
+            r = 0.5f;
+        }
+        if (Math.abs(r - cornerRatio) < 0.001f) {
+            return;
+        }
+        this.cornerRatio = r;
+        notifyDataSetChanged();
+    }
+
+    /** 按配置圆角比例裁一次图标（带缓存，配置变了才重裁） */
+    private android.graphics.Bitmap roundOf(AppEntry e) {
+        if (cornerRatio <= 0.001f) {
+            return e.icon;
+        }
+        if (e.iconRounded != null
+                && Math.abs(e.iconRoundedRatio - cornerRatio) < 0.001f) {
+            return e.iconRounded;
+        }
+        android.graphics.Bitmap src = e.icon;
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return src;
+        }
+        try {
+            float r = Math.min(w, h) * Math.min(0.5f, cornerRatio);
+            android.graphics.Bitmap out = android.graphics.Bitmap.createBitmap(
+                    w, h, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas c = new android.graphics.Canvas(out);
+            android.graphics.Paint p = new android.graphics.Paint(
+                    android.graphics.Paint.ANTI_ALIAS_FLAG);
+            p.setShader(new android.graphics.BitmapShader(src,
+                    android.graphics.Shader.TileMode.CLAMP,
+                    android.graphics.Shader.TileMode.CLAMP));
+            c.drawRoundRect(new android.graphics.RectF(0, 0, w, h), r, r, p);
+            e.iconRounded = out;
+            e.iconRoundedRatio = cornerRatio;
+            if (DUMP_R < 3) {
+                DUMP_R++;
+                try {
+                    java.io.FileOutputStream fos = new java.io.FileOutputStream(
+                            "/sdcard/hkround_" + DUMP_R + ".png");
+                    out.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, fos);
+                    fos.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            return out;
+        } catch (Throwable t) {
+            return src;
+        }
     }
 
     /** 背景色变化时调用 */
@@ -191,7 +254,12 @@ final class FavAdapter extends BaseAdapter {
             name.setTextColor(colorDim);
         } else {
             if (e.icon != null) {
-                icon.setImageBitmap(e.icon);
+                android.util.Log.i("HKFAV", "pkg=" + e.pkg + " ratio=" + cornerRatio
+                        + " icon=" + e.icon.getWidth() + "x" + e.icon.getHeight()
+                        + " rounded=" + (roundOf(e) != e.icon));
+                // 显示层兜底：再按配置比例裁一次圆角。renderIcon 产出的 bitmap 本来带圆角，
+                // 这里重复裁只是把外围透明区再切一点，无副作用；万一拿到的是直角图标也能修圆。
+                icon.setImageBitmap(roundOf(e));
             } else {
                 icon.setImageDrawable(null);
             }

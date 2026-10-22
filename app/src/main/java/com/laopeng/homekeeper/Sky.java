@@ -203,9 +203,22 @@ final class Sky {
         busy = true;
         Thread th = new Thread(() -> {
             try {
-                double[] ll = resolve(ctx, cityCfg);
-                if (ll != null) {
-                    fetch(ctx, ll[0], ll[1]);
+                if (MiWeather.looks(cityCfg)) {
+                    // 配了小米 locationKey → 用「天气 TV」App 同一套接口，两边数据完全一致。
+                    // geoCfg 记下配置串，stale() 才能认出「地点配置变了要重算」。
+                    geoCfg = cityCfg;
+                    try {
+                        fetchMi(ctx, cityCfg);
+                    } catch (Throwable t) {
+                        // 小米接口挂了也不能让顶栏没数：退回 open-meteo 的固定同安坐标
+                        Log.w(TAG, "sky mi failed, fallback open-meteo: " + t);
+                        fetch(ctx, MiWeather.TONGAN_LAT, MiWeather.TONGAN_LON);
+                    }
+                } else {
+                    double[] ll = resolve(ctx, cityCfg);
+                    if (ll != null) {
+                        fetch(ctx, ll[0], ll[1]);
+                    }
                 }
             } catch (Throwable t) {
                 Log.w(TAG, "sky refresh failed: " + t);
@@ -417,6 +430,26 @@ final class Sky {
     }
 
     // ==================== 天气 ====================
+
+    /** 拉「同源小米天气」并写缓存（与天气 App 完全同一份数据）。 */
+    private void fetchMi(Context ctx, String key) throws Exception {
+        MiWeather.R r = MiWeather.fetch(key, MiWeather.TONGAN_LAT, MiWeather.TONGAN_LON);
+        if (r.temp == Integer.MIN_VALUE) {
+            throw new Exception("小米天气无温度");
+        }
+        String desc = r.desc == null ? "" : r.desc;
+        String temp = r.temp + "℃";
+        summary = compose(desc, temp);
+
+        SharedPreferences.Editor e = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit();
+        e.putString(K_DESC, desc);
+        e.putString(K_TEMP, temp);
+        e.putLong(K_TS, System.currentTimeMillis());
+        e.apply();
+        ts = System.currentTimeMillis();
+        Log.i(TAG, "sky mi ok: " + summary + " (高" + r.tMax + " 低" + r.tMin
+                + " pub=" + r.pub + " key=" + key + ")");
+    }
 
     /** 拉当前天气并写缓存 */
     private void fetch(Context ctx, double lat, double lon) throws Exception {

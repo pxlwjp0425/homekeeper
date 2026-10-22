@@ -53,7 +53,17 @@ public class OverlayService extends Service {
     /** 桌面是否在最前。存成静态量，Service 后于桌面启动时也能拿到正确初值 */
     private static volatile boolean HOME_FRONT = false;
 
-    private final SimpleDateFormat clockFmt = new SimpleDateFormat("HH:mm", Locale.CHINA);
+    /** 录屏 App 是否正在录。由 tv-recorder 广播告知（见 {@link RecStateReceiver}） */
+    private static volatile boolean RECORDING = false;
+    /** 最后一次收到「正在录」心跳的时刻 */
+    private static volatile long REC_TS = 0L;
+    /**
+     * 心跳超时阈值：超过这么久没再收到「正在录」，就当录屏已经结束。
+     * 录屏进程被系统杀掉时收不到停录通知，靠这个自愈，免得浮层永远消失。
+     */
+    private static final long REC_STALE_MS = 90_000L;
+
+    private final SimpleDateFormat clockFmt = new SimpleDateFormat("HH:mm:ss", Locale.CHINA);
     private final SimpleDateFormat dateFmt = new SimpleDateFormat("M月d日 EEEE", Locale.CHINA);
 
     private WindowManager wm;
@@ -69,6 +79,8 @@ public class OverlayService extends Service {
 
     private volatile boolean homeFront = false;
     private boolean dead = false;
+    /** 录屏 App 正在录：整条悬浮信息收起，免得被录进画面 */
+    private volatile boolean recording = false;
 
     // ==================== 生命周期 ====================
 
@@ -83,6 +95,7 @@ public class OverlayService extends Service {
         INSTANCE = this;
         ui = new Handler(Looper.getMainLooper());
         homeFront = HOME_FRONT;
+        recording = RECORDING;
         cfg = ThemeStore.load(this);
         sky = Sky.load(this);
         try {
@@ -99,6 +112,8 @@ public class OverlayService extends Service {
         Log.i(TAG, "overlay up: margin=" + cfg.ovMarginDp + "dp clock=" + cfg.ovClockSizeSp
                 + "sp date=" + cfg.ovDateSizeSp + "sp bg=" + cfg.ovBgAlpha + "%");
         ui.post(tick);
+        // 时钟显示到秒：单独每秒刷一次文本（重活仍走 15 秒的 tick）
+        ui.post(clockTick);
     }
 
     @Override
@@ -182,6 +197,25 @@ public class OverlayService extends Service {
         }
     }
 
+    /** 录屏 App 开始/结束录制。录制期间把悬浮信息条收起来 —— 它会被录进画面。
+     *  不依赖本 Service 是否已在跑：静态量先记下，Service 起来时会读它。 */
+    static void setRecording(boolean on) {
+        RECORDING = on;
+        REC_TS = System.currentTimeMillis();
+        final OverlayService s = INSTANCE;
+        if (s != null) {
+            s.ui.post(() -> {
+                s.recording = on;
+                s.render();
+            });
+        }
+    }
+
+    /** 现在是否在录屏（带心跳超时判断）。供桌面顶栏等地方查询 */
+    static boolean isRecording() {
+        return RECORDING && System.currentTimeMillis() - REC_TS <= REC_STALE_MS;
+    }
+
     /** 配置热重载后催一次刷新 */
     static void refresh() {
         final OverlayService s = INSTANCE;
@@ -195,6 +229,20 @@ public class OverlayService extends Service {
 
     // ==================== 内部 ====================
 
+    /** 每秒只刷悬浮条时钟文本，对齐整秒 */
+    private final Runnable clockTick = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                if (tvClock != null) {
+                    tvClock.setText(clockFmt.format(new Date()));
+                }
+            } catch (Throwable ignored) {
+            }
+            ui.postDelayed(this, 1000L - (System.currentTimeMillis() % 1000L));
+        }
+    };
+
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
@@ -202,6 +250,12 @@ public class OverlayService extends Service {
                 return;
             }
             try {
+                // 录屏心跳超时自愈：录屏 App 崩了/被杀了就收不到停录通知，
+                // 别让浮层（以及桌面顶栏）永远不回来
+                if (recording && System.currentTimeMillis() - REC_TS > REC_STALE_MS) {
+                    Log.w(TAG, "rec heartbeat stale, restore overlay");
+                    recording = false;
+                }
                 refreshCfg();
                 render();
                 refreshWeather();
@@ -225,10 +279,10 @@ public class OverlayService extends Service {
         if (c == null || s == null || !c.showWeather) {
             return;
         }
-        if (!s.stale(c.weatherRefreshMin, c.weatherCity)) {
+        if (!s.stale(c.weatherRefreshMin, c.skyPlace())) {
             return;
         }
-        s.refreshAsync(this, c.weatherCity, this::render);
+        s.refreshAsync(this, c.skyPlace(), this::render);
     }
 
     private void buildPanel() {
@@ -330,8 +384,9 @@ public class OverlayService extends Service {
             }
         }
 
-        // 可见性：配置关了、或桌面自己在前台 → 藏起来
-        panel.setVisibility((c.ovEnabled && !homeFront) ? View.VISIBLE : View.GONE);
+        // 可见性：配置关了、桌面自己在前台、或正在录屏 → 都藏起来。
+        // 录屏时要收起是因为 MediaProjection 抓的是合成后的画面，浮层一定会入镜。
+        panel.setVisibility((c.ovEnabled && !homeFront && !recording) ? View.VISIBLE : View.GONE);
     }
 
     private int dp(int v) {

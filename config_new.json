@@ -1,0 +1,157 @@
+{
+  "tabs": {
+    "home": "首页",
+    "all": "全部应用",
+    "bg": "背景",
+    "_说明": "顶部三个页签显示的文字，改这里就能换标签名",
+    "_home": "第一个页签（首页/自定义收藏页）的文字",
+    "_all": "第二个页签（全部应用）的文字",
+    "_bg": "第三个页签（设置）的文字"
+  },
+  "grid": {
+    "favColumns": 7,
+    "allColumns": 8,
+    "favRowSpacingDp": 20,
+    "allRowSpacingDp": 10,
+    "favColSpacingDp": 8,
+    "allColSpacingDp": 8,
+    "iconSizeDp": 140,
+    "iconPadBottomDp": 6,
+    "_说明": "网格布局：每行几个、行距列距、图标大小",
+    "_favColumns": "首页每行摆几个图标（当前 7 列）",
+    "_allColumns": "全部应用页每行摆几个图标",
+    "_favRowSpacingDp": "首页行与行之间的间距（dp，越大越疏）",
+    "_allRowSpacingDp": "全部应用页行间距（dp）",
+    "_favColSpacingDp": "首页列与列之间的间距（dp）",
+    "_allColSpacingDp": "全部应用页列间距（dp）",
+    "_iconSizeDp": "图标边长（dp）。这个值越大，图标越大",
+    "_iconPadBottomDp": "图标与下方应用名字之间的距离（dp）"
+  },
+  "icon": {
+    "sizeRatio": 0.8799999952316284,
+    "cornerRatio": 0.30000001192092896,
+    "strokeDp": 1.5,
+    "strokeColor": "#33FFFFFF",
+    "_说明": "图标外观：留白比例、圆角、描边",
+    "_sizeRatio": "图标内容占格子的比例。0.88 = 四周各留 6% 空白",
+    "_cornerRatio": "圆角半径 ÷ 图标边长。0=直角，0.3=柔和圆角，0.5=圆形",
+    "_strokeDp": "图标外描边宽度（dp）。0 = 不描边",
+    "_strokeColor": "描边颜色，ARGB 十六进制。#33FFFFFF = 20% 透明度的白色"
+  },
+  "text": {
+    "clockSizeSp": 48,
+    "dateSizeSp": 16,
+    "tabSizeSp": 15,
+    "nameSizeSp": 20,
+    "namePadTopDp": 5,
+    "_说明": "顶栏与图标下方文字的字号",
+    "_clockSizeSp": "顶栏大时钟的字号",
+    "_dateSizeSp": "顶栏星期/日期的字号",
+    "_tabSizeSp": "三个页签文字的字号",
+    "_nameSizeSp": "图标下方应用名的字号",
+    "_namePadTopDp": "应用名与图标之间的留白（dp）"
+  },
+  "topbar": {
+    "showLunar": true,
+    "showWeather": true,
+    "city": "",
+    "locationKey": "weathercn:101230202",
+    "refreshMinutes": 30,
+    "_说明": "顶栏信息：农历、天气、城市",
+    "_showLunar": "是否在日期后显示农历",
+    "_showWeather": "是否在右上角显示天气",
+    "_city": "天气显示的城市名（仅用于界面标注）",
+    "_refreshMinutes": "天气多少分钟刷新一次"
+  },
+  "overlay": {
+    "enabled": true,
+    "marginDp": 24,
+    "clockSizeSp": 28,
+    "dateSizeSp": 14,
+    "bgAlpha": 0,
+    "shadow": true,
+    "_说明": "左上角那一条悬浮信息（时钟/日期/天气）",
+    "_enabled": "是否显示悬浮信息条",
+    "_marginDp": "悬浮条离屏幕左边缘和上边缘的距离（dp）",
+    "_clockSizeSp": "悬浮条里时钟的字号",
+    "_dateSizeSp": "悬浮条里日期的字号",
+    "_bgAlpha": "悬浮条背景的不透明度 0-255（0 = 全透明）",
+    "_shadow": "文字是否加阴影（压在亮色壁纸上时更清楚）"
+  },
+  "wallpaper": {
+    "mode": "bing",
+    "bingMkt": "zh-CN",
+    "bingUhd": false,
+    "dim": 50,
+    "applySystem": false,
+    "autoDaily": true,
+    "rotateMinutes": 3,
+    "rotatePool": 0,
+    "_说明": "壁纸：来源、暗化、轮换",
+    "_mode": "壁纸来源。bing = 必应每日图",
+    "_bingMkt": "必应地区：zh-CN 中国 / en-US 美国 / ja-JP 日本",
+    "_bingUhd": "是否下载 UHD 高清版（文件更大）",
+    "_dim": "壁纸暗化程度 0-100。越大越暗，图标和文字越清楚",
+    "_applySystem": "是否同时把这张图设为系统壁纸",
+    "_autoDaily": "是否每天自动换成当天的新图",
+    "_rotateMinutes": "每隔多少分钟换一张（0 = 不轮换）",
+    "_rotatePool": "轮换池最多保留多少张（0 = 不限，按磁盘空间）"
+  },
+  "themes": [
+    {
+      "name": "深空黑",
+      "color": "#0E1116"
+    },
+    {
+      "name": "石墨灰",
+      "color": "#23262B"
+    },
+    {
+      "name": "午夜蓝",
+      "color": "#10243E"
+    },
+    {
+      "name": "松林绿",
+      "color": "#123027"
+    },
+    {
+      "name": "云母白",
+      "color": "#EDEFF2"
+    },
+    {
+      "name": "星紫",
+      "top": "#07040F",
+      "bottom": "#4A2E86"
+    },
+    {
+      "name": "暮霞",
+      "top": "#1A0805",
+      "bottom": "#8A3A1E"
+    },
+    {
+      "name": "深海青",
+      "top": "#02161C",
+      "bottom": "#0E6B72"
+    },
+    {
+      "name": "品红夜",
+      "top": "#17030C",
+      "bottom": "#8A2050"
+    },
+    {
+      "name": "石墨",
+      "top": "#0B0D12",
+      "bottom": "#3A4150"
+    },
+    {
+      "name": "暖沙",
+      "top": "#6B4520",
+      "bottom": "#FFE2BE"
+    },
+    {
+      "name": "薄荷雾",
+      "top": "#3A8A96",
+      "bottom": "#BFEFE6"
+    }
+  ]
+}

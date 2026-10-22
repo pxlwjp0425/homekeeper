@@ -23,7 +23,7 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.LayerDrawable;
 import android.net.Uri;
-import android.media.AudioManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -102,9 +102,6 @@ public class MainActivity extends Activity {
     private static final int POOL_WARM = 16;
     /** 自动换图失败/未到时最短重试间隔，免得每 15 秒打一次网 */
     private static final long WP_RETRY_MS = 20 * 60 * 1000L;
-    /** 音频看门狗间隔：1 秒实测足够及时，开销可忽略 */
-    private static final long AUDIO_GUARD_MS = 1000L;
-
     // ---- 背景配色 / 界面参数：全部来自配置文件，主程序不再硬编码 ----
     // 文件位置 /sdcard/homekeeper/config.json，格式见 ThemeStore.DEFAULT_JSON。
     // 启动时读取；onResume 时若文件被外部改过（mtime 变化）会自动重载。
@@ -141,6 +138,27 @@ public class MainActivity extends Activity {
     private FavAdapter favAdapter;
     private TextView clock;
     private TextView date;
+
+    /**
+     * 录屏状态（来自录屏 App 的广播）。
+     *
+     * <p>MediaProjection 抓的是屏幕合成后的画面 —— 顶栏只要还画着就一定会被录进视频，而系统
+     * 没有 API 能单独把某一层挖掉。所以录屏期间把时钟/天气调成<b>全透明</b>：肉眼看没有、录像里也没有，
+     * 但布局与焦点链原封不动（用 alpha 而不是 GONE，免得遥控器操作断层）。
+     * 页签不动，否则录制中回到桌面就没法翻页了。
+     */
+    private final BroadcastReceiver recStateRx = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            applyRecState(intent != null && intent.getBooleanExtra("on", false));
+        }
+    };
+
+    private void applyRecState(boolean recording) {
+        final float a = recording ? 0f : 1f;
+        if (clock != null) clock.setAlpha(a);
+        if (date != null) date.setAlpha(a);
+    }
     /** 顶部页签指示（纯展示，不可聚焦） */
     private TextView tabAll;
     private TextView tabFav;
@@ -152,8 +170,6 @@ public class MainActivity extends Activity {
     private volatile String lastSig = "";
     /** 首次焦点是否已成功钉到网格上 */
     private boolean firstFocusDone = false;
-    /** 音频看门狗失败日志只打一次（免得每秒刷屏） */
-    private boolean audioGuardWarned = false;
 
     private SharedPreferences prefs;
     /** 当前排序模式：SORT_FREQ（默认）/ SORT_NAME */
@@ -170,6 +186,8 @@ public class MainActivity extends Activity {
     private volatile String[] favPkgs = new String[FavAdapter.DEFAULT_SLOTS];
     /** 自定义页的渲染数据，size 恒等于当前槽位数，null = 空槽 */
     private final List<AppEntry> favs = new ArrayList<>();
+    /** 临时诊断：前 3 个渲染出的图标落盘，用完删掉 */
+    private static int DUMP_ICON = 0;
 
     // ---- 首页「整理顺序」模式（v4.1）----
     /** 是否正在整理首页顺序：此时左右/上下键搬动当前格，OK 放下、返回取消 */
@@ -241,10 +259,22 @@ public class MainActivity extends Activity {
         }
     }
 
-    private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.CHINA);
+    private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm:ss", Locale.CHINA);
     private final SimpleDateFormat dateFmt = new SimpleDateFormat("M月d日 EEEE", Locale.CHINA);
     /** 只用来跟 Bing 的 {@code startdate} 比日期（yyyyMMdd），故用 ROOT，别受中文区域影响 */
     private final SimpleDateFormat dayFmt = new SimpleDateFormat("yyyyMMdd", Locale.ROOT);
+
+    /** 每秒只刷时钟文本（对齐整秒）；重活仍旧走下面 15 秒的 tick，别混在一起 */
+    private final Runnable clockTick = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                clock.setText(timeFmt.format(new Date()));
+            } catch (Throwable ignored) {
+            }
+            ui.postDelayed(this, 1000L - (System.currentTimeMillis() % 1000L));
+        }
+    };
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -261,75 +291,6 @@ public class MainActivity extends Activity {
             ui.postDelayed(this, 15000L);
         }
     };
-
-    /**
-     * 音频看门狗，实现见 {@link #pullCommAudioToHdmi()}。每秒一次，与 {@link #tick}（15 秒）无关 ——
-     * 要赶在 App 把声音锁到「外放」之后尽快纠回来。
-     *
-     * <p>⚠️ 它<b>不随 onPause 停</b>：中兴智慧生活一进实时预览，本桌面就退到后台了，
-     * 恰恰后台这一段最需要它。只在 onDestroy 停。</p>
-     */
-    private final Runnable audioGuard = new Runnable() {
-        @Override
-        public void run() {
-            pullCommAudioToHdmi();
-            ui.postDelayed(this, AUDIO_GUARD_MS);
-        }
-    };
-
-    /**
-     * 把「通话类音频」从外放拉回 HDMI。
-     *
-     * <p>背景（实测取证见 {@code zte-smarthome/AUDIO-TV.md}）：本盒子唯一的输出设备是 HDMI Out，
-     * 「扬声器」这条物理通路根本不存在。中兴智慧生活 6.1.7 一进摄像头实时预览就
-     * {@code setMode(MODE_IN_COMMUNICATION)} + {@code setSpeakerphoneOn(true)}
-     * （AudioService 事件日志：{@code setForceUse(FOR_COMMUNICATION, FORCE_SPEAKER)
-     * due to setSpeakerphoneOn(true) from u/pid:10082}），于是摄像头声音走 STREAM_VOICE_CALL
-     * 被送进 AUDIO_DEVICE_OUT_SPEAKER → 电视一点声音都没有。
-     * （它的「回放」走 STREAM_MUSIC → HDMI，所以回放是好的，这也能对上用户的观察。）</p>
-     *
-     * <p>这里每秒做两件事：① 把 {@code mode} 拉回 {@code MODE_NORMAL}；② 清 speakerphone
-     * （等价于 {@code setForceUse(FOR_COMMUNICATION, FORCE_NONE)}）。两者缺一不可 ——
-     * 只做 ② 时 {@code isInCall()} 仍因 {@code MODE_IN_COMMUNICATION} 为真，通话流照样进
-     * 不存在的「扬声器」。</p>
-     *
-     * <p><b>故意不读 {@code isSpeakerphoneOn()} 当判据</b>：那是本进程的缓存值，别的 App 改的
-     * 未必及时同步过来，拿它判反而可能永远为 false；无脑调用最稳，且值没变时 audioserver 会直接
-     * early-return，开销可忽略。</p>
-     *
-     * <p>开关：config.json → {@code audio.keepHdmi}（默认 true）。</p>
-     */
-    private void pullCommAudioToHdmi() {
-        try {
-            final ThemeStore c = cfg;
-            if (c != null && !c.audioKeepHdmi) {
-                return;
-            }
-            final AudioManager am =
-                    (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-            if (am == null) {
-                return;
-            }
-            // ① 先把通话模式拉回 NORMAL —— 这才是真正让声音落到 HDMI 的一步。
-            //    AOSP getDeviceForStrategy(STRATEGY_PHONE) 的规则：当
-            //    FOR_COMMUNICATION==FORCE_NONE 且「非通话态」(isInCall()==false，
-            //    即 mode ∉ {IN_CALL, IN_COMMUNICATION}) 时，通话流会回落到媒体设备，
-            //    本机唯一的媒体输出就是 HDMI。而 App 已经 setMode(IN_COMMUNICATION)，
-            //    isInCall() 恒为真 → 只清 speakerphone 根本没用（实测输出线程
-            //    Output devices 仍是 0x2 = AUDIO_DEVICE_OUT_SPEAKER，电视无声）。
-            if (am.getMode() != AudioManager.MODE_NORMAL) {
-                am.setMode(AudioManager.MODE_NORMAL);
-            }
-            // ② 再清 speakerphone（对偶的 setForceUse(FOR_COMMUNICATION, FORCE_NONE)）。
-            am.setSpeakerphoneOn(false);
-            audioGuardWarned = false;
-        } catch (Throwable t) {
-            if (!audioGuardWarned) {
-                audioGuardWarned = true;
-                Log.w(TAG, "audio guard failed: " + t);
-            }
-        }
-    }
 
     /**
      * 顶栏那行小字：{@code 10月10日 星期六 农历八月十九 晴 21℃}。
@@ -369,7 +330,7 @@ public class MainActivity extends Activity {
             return;
         }
         final Sky s = sky;
-        final String city = c != null ? c.weatherCity : "";
+        final String city = c != null ? c.skyPlace() : "";
         if (s == null || !s.stale(c != null ? c.weatherRefreshMin : 30, city)) {
             return;
         }
@@ -420,10 +381,91 @@ public class MainActivity extends Activity {
         }
     };
 
+    /**
+     * 本机 ROM 每次重启都会把 display_density_forced 清掉（重启后回到 320），
+     * 这里在桌面启动时检查并写回 200。
+     * 需要 WRITE_SECURE_SETTINGS（安装后 root 下 `pm grant` 一次即可）。
+     */
+    private void ensureDensity() {
+        new Thread(() -> {
+            try {
+                // 本机 ROM 重启会清掉 display_density_forced，回到物理 320。
+                // 桌面启动时写回 220（已实测 WMS 不读 settings_secure.xml，只能靠 App 启动兜底）。
+                int cur = android.provider.Settings.Secure.getInt(
+                        getContentResolver(), "display_density_forced", 0);
+                if (cur != 220) {
+                    android.provider.Settings.Secure.putInt(
+                            getContentResolver(), "display_density_forced", 220);
+                    String r = AdbShell.exec("wm density 220");
+                    android.util.Log.i("HKDENSITY", cur + " -> 220, adb=" + (r == null ? "null" : r.trim()));
+                }
+            } catch (Throwable t) {
+                android.util.Log.w("HKDENSITY", "failed: " + t);
+            }
+        }, "density-fix").start();
+    }
+
+    /**
+     * 配置目录/文件权限自检：adb 兜底保存靠 shell 身份写，
+     * 文件必须是 666、目录必须是 777，否则 shell 会被 EACCES 挡住。
+     * 用 root cp 或电脑端保存后权限常被改回 644，所以每次启动顺手修一下。
+     */
+    private void ensureCfgPerm() {
+        new Thread(() -> {
+            try {
+                java.io.File f = ThemeStore.file(this);
+                if (!f.exists()) {
+                    return;
+                }
+                AdbShell.exec("chmod 666 " + f.getAbsolutePath());
+                java.io.File d = f.getParentFile();
+                if (d != null) {
+                    AdbShell.exec("chmod 777 " + d.getAbsolutePath());
+                }
+            } catch (Throwable ignored) {
+            }
+        }, "cfg-perm").start();
+    }
+
+    /**
+     * 确保自己是默认桌面。重装 APK 会把 HOME 角色重置回官方桌面，
+     * 这里用 RoleManager 弹一次系统确认框，用户选「始终」后就固定下来。
+     */
+    private void ensureHomeRole() {
+        try {
+            // 先看系统的默认 HOME 到底是不是自己：用 resolveActivity 判断，
+            // 比 RoleManager.isRoleHeld 准（有些 ROM 用 set-home-activity 设了但 role 状态不认）。
+            android.content.Intent home = new android.content.Intent(
+                    android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_HOME);
+            android.content.pm.ResolveInfo ri = getPackageManager()
+                    .resolveActivity(home, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+            String defPkg = (ri != null && ri.activityInfo != null)
+                    ? ri.activityInfo.packageName : "";
+            if (getPackageName().equals(defPkg)) {
+                return;                       // 已经是默认桌面，什么都不做
+            }
+            if (android.os.Build.VERSION.SDK_INT < 29) {
+                return;
+            }
+            android.app.role.RoleManager rm =
+                    (android.app.role.RoleManager) getSystemService(android.content.Context.ROLE_SERVICE);
+            if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_HOME)) {
+                startActivityForResult(
+                        rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_HOME), 1001);
+            }
+        } catch (Throwable t) {
+            android.util.Log.w("HKROLE", "role request skipped: " + t);
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        ensureDensity();
+        ensureCfgPerm();
+        getWindow().getDecorView().post(this::ensureHomeRole);
 
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         try {
@@ -597,9 +639,9 @@ public class MainActivity extends Activity {
         super.onResume();
         ui.removeCallbacks(tick);
         ui.post(tick);
-        // 音频看门狗：要跨 App（onPause 期间）持续跑，故不随 onPause 停；这里兜底保证它在跑
-        ui.removeCallbacks(audioGuard);
-        ui.post(audioGuard);
+        // 时钟显示到秒，需要每秒刷一次（只 setText，代价很小）
+        ui.removeCallbacks(clockTick);
+        ui.post(clockTick);
         // 配置文件可能被外部改过（电脑/文件管理器），变化了就重载
         reloadConfigIfChanged();
         // 从别的 App 回桌面时顺手看下天气要不要更新
@@ -607,6 +649,18 @@ public class MainActivity extends Activity {
         // 悬浮信息条：桌面回到前台就自动隐藏（免得跟顶栏叠成两份）
         OverlayService.setHomeFront(true);
         syncOverlay();
+        // 录屏状态：录制中把顶栏时钟/天气也收起来（广播来自录屏 App）
+        try {
+            IntentFilter rf = new IntentFilter(RecStateReceiver.ACTION);
+            if (Build.VERSION.SDK_INT >= 33) {
+                // 广播是别的 App 发的，必须 EXPORTED 才收得到
+                registerReceiver(recStateRx, rf, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(recStateRx, rf);
+            }
+        } catch (Throwable ignored) {
+        }
+        applyRecState(OverlayService.isRecording());
         if (apps.isEmpty()) {
             loadAppsAsync();
         } else {
@@ -652,8 +706,10 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         ui.removeCallbacks(tick);
+        ui.removeCallbacks(clockTick);
         // 离开桌面（切到别的 App）：让悬浮信息条显出来，它就是给别的 App 看的
         OverlayService.setHomeFront(false);
+        try { unregisterReceiver(recStateRx); } catch (Throwable ignored) {}
         // 离开桌面（回屏保 / 切到别的窗口）就把整理模式收掉，避免状态残留
         if (arranging) {
             exitArrange(true);
@@ -664,7 +720,6 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         ui.removeCallbacks(tick);
-        ui.removeCallbacks(audioGuard);
         try {
             unregisterReceiver(pkgWatcher);
         } catch (Throwable ignored) {
@@ -1666,9 +1721,12 @@ public class MainActivity extends Activity {
         try {
             ThemeStore c = cfg;
             float sizeRatio = c == null ? 0.88f : c.iconSizeRatio;
-            float cornerRatio = c == null ? 0.22f : c.iconCornerRatio;
+            float cornerRatio = c == null ? 0.3f : c.iconCornerRatio;
             float strokeDp = c == null ? 1.5f : c.iconStrokeDp;
             int strokeColor = c == null ? 0x33FFFFFF : c.iconStrokeColor;
+            android.util.Log.i("HKICON", "size=" + size + " sizeRatio=" + sizeRatio
+                    + " corner=" + cornerRatio + " stroke=" + strokeDp
+                    + " cfgNull=" + (c == null) + " file=" + ThemeStore.pathText(this));
 
             int w = d.getIntrinsicWidth();
             int h = d.getIntrinsicHeight();
@@ -1738,6 +1796,20 @@ public class MainActivity extends Activity {
             }
             canvas.drawBitmap(raw, pad, pad, paint);
             raw.recycle();
+
+            if (DUMP_ICON < 3) {
+                DUMP_ICON++;
+                try {
+                    java.io.FileOutputStream fos = new java.io.FileOutputStream(
+                            "/sdcard/hkicon_" + DUMP_ICON + ".png");
+                    bmp.compress(Bitmap.CompressFormat.PNG, 100, fos);
+                    fos.close();
+                    android.util.Log.i("HKICON", "dumped /sdcard/hkicon_" + DUMP_ICON + ".png "
+                            + bmp.getWidth() + "x" + bmp.getHeight() + " inner=" + inner
+                            + " pad=" + pad + " radius=" + radius);
+                } catch (Throwable ignored) {
+                }
+            }
 
             // 3) 统一描边
             if (strokeDp > 0.01f) {
@@ -1896,6 +1968,7 @@ public class MainActivity extends Activity {
             if (favAdapter != null) {
                 boolean slotsChanged = favAdapter.applyConfig(s.favColumns, s.iconSizeDp,
                         s.iconPadBottomDp, s.nameSizeSp, s.namePadTopDp);
+                favAdapter.setCornerRatio(s.iconCornerRatio);
                 if (slotsChanged) {
                     // 列数变了 → 槽位数变了 → 数据数组跟着调整，并重新读取已保存的包名
                     resizeFavs(favAdapter.getSlots());
@@ -2100,17 +2173,24 @@ public class MainActivity extends Activity {
         final int keep = cfg != null ? cfg.wpRotatePool : 0;
         new Thread(() -> {
             try {
-                // 日期 → 带标题的名字。先用接口铺最近 16 天，再用本地标题库覆盖 ——
-                // 本地库是按【图片内容】匹配的，对具体那张图一定准；接口按 startdate 匹配，
-                // 历史图因 UTC/本地日期错位可能差一天，故本地优先。
+                // 日期 → 标题。只信 Bing 接口给的（最近 16 天，准确）。
+                // 本地 titles.json 是按日期从第三方抓的，实测整体错位（2026-10-18 接口说
+                // "水上通衢/威尼斯"，本地给的是"多巴达恩城堡"），拿它覆盖只会张冠李戴，
+                // 所以不再调用 loadLocalTitles；查不到标题的条目在列表里只显示日期。
+                //
+                // 为了不浪费接口每次给的准确标题，抓到就并进本地 verified 库逐日累积，
+                // 以后这些日期即使超出接口 16 天窗口也还能显示正确的名字。
                 final java.util.Map<String, String> titles = new java.util.HashMap<>();
+                loadVerifiedTitles(titles);
+                final java.util.Map<String, String> fresh = new java.util.HashMap<>();
                 try {
                     for (Bing.Item it : Bing.list(mkt, POOL_WARM)) {
-                        titles.put(it.date, it.label());
+                        fresh.put(it.date, it.label());
                     }
                 } catch (Throwable ignored) {
                 }
-                loadLocalTitles(titles);
+                titles.putAll(fresh);
+                mergeVerifiedTitles(fresh);
                 List<File> pool = Bing.cached(this);
                 if (pool.isEmpty()) {
                     for (Bing.Item it : Bing.list(mkt, POOL_WARM)) {
@@ -2134,13 +2214,33 @@ public class MainActivity extends Activity {
 
     /** 壁纸选择列表：随机 / 本地池全部 / 回到纯色 */
     private void showBingList(final List<File> files, final java.util.Map<String, String> titles) {
+        // 说明：这里必须列出【全部】本地图（每天可能不止一张，都是不同的照片）。
+        // 标题只信 Bing 接口给的（准确）；本地 titles.json 是按日期从第三方抓的，整体有错位
+        // （实测 2026-10-18 接口说"水上通衢/威尼斯"，它给的是"多巴达恩城堡"），
+        // 所以不再拿它覆盖，查不到标题就只显示日期，绝不张冠李戴。
         final String[] names = new String[files.size() + 2];
         names[0] = "🎲 随机来一张";
+
+
         int titled = 0;
+        int fromName = 0;
         for (int i = 0; i < files.size(); i++) {
-            final String d = dateOf(files.get(i));
-            final String t = titles.get(d);
-            names[i + 1] = (t != null && !t.isEmpty()) ? t : prettyDate(d);
+            final File f = files.get(i);
+            final String d = dateOf(f);
+            // 标题优先级：
+            //   ① 文件名自带的（YYYYMMDD_标题.jpg，外部导入的整理库，最可靠，直接能读）
+            //   ② Bing 官方接口给的（只有最近 16 天，但日期与图对得上）
+            // 同一天的第二、三张（bing_YYYYMMDD_01/02）没有独立标题，
+            // 用了就会张冠李戴，所以只显示日期。
+            final String fnTitle = Bing.titleOfName(f.getName());
+            final String t;
+            if (!fnTitle.isEmpty()) {
+                t = fullDate(d) + "  " + clip(fnTitle, 22);
+                fromName++;
+            } else {
+                t = isVariantName(f.getName()) ? null : titles.get(d);
+            }
+            names[i + 1] = (t != null && !t.isEmpty()) ? t : fullDate(d);
             if (t != null && !t.isEmpty()) {
                 titled++;
             }
@@ -2153,7 +2253,7 @@ public class MainActivity extends Activity {
                 sb.append(names[i]).append(" | ");
             }
             Log.i("HKDBG", "bing-list: pool=" + files.size() + " titled=" + titled
-                    + " head=" + sb);
+                    + " fromName=" + fromName + " head=" + sb);
         } catch (Throwable ignored) {
         }
 
@@ -2203,6 +2303,29 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** {@code bing_20210201_01.jpg} 这类同日多图（带 _NN 后缀）返回 true；主图 {@code bing_20210201.jpg} 返回 false */
+    private static boolean isVariantName(String name) {
+        if (name == null) {
+            return false;
+        }
+        final int dot = name.lastIndexOf('.');
+        final String base = dot > 0 ? name.substring(0, dot) : name;
+        final int us = base.lastIndexOf('_');
+        if (us < 0 || base.length() - us - 1 != 2) {
+            return false;
+        }
+        return Character.isDigit(base.charAt(us + 1)) && Character.isDigit(base.charAt(us + 2));
+    }
+
+    /** {@code 20261001} → {@code 2026-10-01}（列表用，带年份；图池跨 2010~现在） */
+    private static String fullDate(String yyyymmdd) {
+        if (yyyymmdd != null && yyyymmdd.length() == 8) {
+            return yyyymmdd.substring(0, 4) + "-" + yyyymmdd.substring(4, 6)
+                    + "-" + yyyymmdd.substring(6, 8);
+        }
+        return yyyymmdd == null ? "" : yyyymmdd;
+    }
+
     /** {@code 20261001} → {@code 10-01}；格式不对就原样返回 */
     private static String prettyDate(String yyyymmdd) {
         if (yyyymmdd != null && yyyymmdd.length() == 8) {
@@ -2219,6 +2342,74 @@ public class MainActivity extends Activity {
      * 拼成与 {@link Bing.Item#label()} 一致的 {@code "MM-DD  标题"} 写进 {@code out}；
      * <b>会覆盖已有键</b>（内容匹配比接口的按日匹配更可靠）。</p>
      */
+    /** 读本地"已验证标题"库：只存 Bing 接口确认过的（date → "10-19  慢节奏生活"） */
+    private void loadVerifiedTitles(java.util.Map<String, String> out) {
+        try {
+            final File f = new File(Bing.dir(this), "titles_verified.json");
+            if (!f.exists() || f.length() <= 2) {
+                return;
+            }
+            final org.json.JSONObject o = new org.json.JSONObject(readTextFile(f));
+            final java.util.Iterator<String> keys = o.keys();
+            while (keys.hasNext()) {
+                final String d = keys.next();
+                final String t = o.optString(d, "");
+                if (!t.isEmpty()) {
+                    out.put(d, t);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 把接口刚拿到的标题并进本地库（只增不改，已有条目不动） */
+    private void mergeVerifiedTitles(java.util.Map<String, String> fresh) {
+        if (fresh == null || fresh.isEmpty()) {
+            return;
+        }
+        try {
+            final File f = new File(Bing.dir(this), "titles_verified.json");
+            org.json.JSONObject o = new org.json.JSONObject();
+            if (f.exists() && f.length() > 2) {
+                try {
+                    o = new org.json.JSONObject(readTextFile(f));
+                } catch (Throwable ignored) {
+                }
+            }
+            boolean changed = false;
+            for (java.util.Map.Entry<String, String> e : fresh.entrySet()) {
+                final String v = e.getValue();
+                if (v != null && !v.isEmpty() && !o.has(e.getKey())) {
+                    o.put(e.getKey(), v);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                writeTextFile(f, o.toString());
+                Log.i("HKDBG", "verified titles -> " + o.length());
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String readTextFile(File f) throws Exception {
+        final java.io.InputStream in = new java.io.FileInputStream(f);
+        final java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+        final byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            bo.write(buf, 0, n);
+        }
+        in.close();
+        return new String(bo.toByteArray(), "UTF-8");
+    }
+
+    private static void writeTextFile(File f, String text) throws Exception {
+        final java.io.OutputStream out = new java.io.FileOutputStream(f);
+        out.write(text.getBytes("UTF-8"));
+        out.close();
+    }
+
     private void loadLocalTitles(java.util.Map<String, String> out) {
         try {
             final File f = new File(Bing.dir(this), "titles.json");
@@ -2465,23 +2656,14 @@ public class MainActivity extends Activity {
         }, "bing-rotate").start();
     }
 
-    /** 从 {@code bing_YYYYMMDD.jpg} 这样的文件名里取出 {@code YYYYMMDD}；取不到返回空串 */
+    /**
+     * 从文件名里取出 {@code YYYYMMDD}；取不到返回空串。
+     *
+     * <p>两种命名都认：{@code bing_YYYYMMDD.jpg}（App 下载）和
+     * {@code YYYYMMDD_标题.jpg}（外部导入的带标题库）。</p>
+     */
     private static String dateOf(File f) {
-        final String n = f.getName();
-        if (n.startsWith("bing_") && n.length() >= 13) {
-            final String d = n.substring(5, 13);
-            boolean allDigit = true;
-            for (int i = 0; i < d.length(); i++) {
-                if (!Character.isDigit(d.charAt(i))) {
-                    allDigit = false;
-                    break;
-                }
-            }
-            if (allDigit) {
-                return d;
-            }
-        }
-        return "";
+        return Bing.dateOfName(f.getName());
     }
 
     /** 顺手把图写进系统壁纸（部分盒子没有壁纸服务，失败静默） */
@@ -2605,7 +2787,7 @@ public class MainActivity extends Activity {
         et.setGravity(Gravity.TOP | Gravity.START);
         et.setTextSize(12f);
         et.setHorizontallyScrolling(false);
-        et.setMinLines(14);
+        et.setMinLines(10);
         et.setTypeface(android.graphics.Typeface.MONOSPACE);
         et.setText(ThemeStore.readRaw(this));
         // 光标移到开头，方便直接看第一行
@@ -2615,25 +2797,60 @@ public class MainActivity extends Activity {
         }
         final ScrollView sv = new ScrollView(this);
         sv.addView(et);
-        sv.setPadding(24, 12, 24, 12);
+        sv.setPadding(0, 4, 0, 0);
+
+        // 编辑框上方一行「参数说明」，点开是每个参数的用途（从配置文件里的 _说明 键生成）
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(24), dp(8), dp(24), dp(8));
+
+        TextView help = new TextView(this);
+        help.setText("？参数说明（点这里看每个参数的含义）");
+        help.setTextSize(12f);
+        help.setTextColor(0xFF4EA1FF);
+        help.setPadding(0, dp(6), 0, dp(10));
+        help.setFocusable(true);
+        help.setOnClickListener(v -> showConfigHelp());
+        box.addView(help);
+        box.addView(sv, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         new AlertDialog.Builder(this)
                 .setTitle("编辑配置  ·  " + path)
-                .setView(sv)
+                .setView(box)
                 .setPositiveButton("保存", (d, w) -> {
-                    String txt = et.getText().toString();
-                    ThemeStore probe = new ThemeStore();
-                    probe.parse(txt);
-                    if (probe.lastError != null) {
-                        toast(probe.lastError);
-                        return;
-                    }
-                    if (!cfg.save(MainActivity.this, txt)) {
-                        toast("保存失败：" + cfg.lastError);
-                        return;
-                    }
-                    reloadConfig();
-                    toast("已保存并生效");
+                    final String txt = et.getText().toString();
+                    // 保存可能要绕道本地 adb（网络操作），必须在后台线程
+                    new Thread(() -> {
+                        ThemeStore probe = new ThemeStore();
+                        probe.parse(txt);
+                        android.util.Log.i("HKSAVE", "len=" + txt.length()
+                                + " probeErr=" + probe.lastError
+                                + " target=" + ThemeStore.pathText(MainActivity.this));
+                        if (probe.lastError != null) {
+                            final String err = probe.lastError;
+                            runOnUiThread(() -> new AlertDialog.Builder(MainActivity.this)
+                                    .setTitle("没有保存")
+                                    .setMessage(err + "\n\n常见原因：\n"
+                                            + "· 少了一个逗号或引号\n"
+                                            + "· 用了中文标点（，：；“”）\n"
+                                            + "· 最后一项多了一个逗号\n\n"
+                                            + "改好后再点一次「保存」。")
+                                    .setPositiveButton("知道了", null)
+                                    .show());
+                            return;
+                        }
+                        boolean ok = cfg.save(MainActivity.this, txt);
+                        android.util.Log.i("HKSAVE", "save=" + ok + " err=" + cfg.lastError);
+                        runOnUiThread(() -> {
+                            if (!ok) {
+                                toast("保存失败：" + cfg.lastError);
+                                return;
+                            }
+                            reloadConfig();
+                            toast("已保存并生效");
+                        });
+                    }, "cfg-save").start();
                 })
                 .setNeutralButton("恢复默认", (d, w) -> {
                     try {
@@ -2645,6 +2862,64 @@ public class MainActivity extends Activity {
                     }
                 })
                 .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /**
+     * 配置参数说明：内容直接读配置文件里的 {@code _说明} / {@code _参数名} 键生成，
+     * 所以改配置文件里的说明文字，这里跟着变，不用改代码。
+     */
+    private void showConfigHelp() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            String json = ThemeStore.readRaw(this);
+            org.json.JSONObject o = new org.json.JSONObject(json);
+            java.util.Iterator<String> segs = o.keys();
+            while (segs.hasNext()) {
+                String seg = segs.next();
+                org.json.JSONObject so = o.optJSONObject(seg);
+                if (so == null) {
+                    continue;
+                }
+                String doc = so.optString("_说明", "");
+                sb.append("【").append(seg).append("】");
+                if (!doc.isEmpty()) {
+                    sb.append("  ").append(doc);
+                }
+                sb.append("\n");
+                java.util.Iterator<String> ks = so.keys();
+                while (ks.hasNext()) {
+                    String k = ks.next();
+                    if (!k.startsWith("_") || "_说明".equals(k)) {
+                        continue;
+                    }
+                    sb.append("  ").append(k.substring(1)).append("：")
+                            .append(so.optString(k)).append("\n");
+                }
+                sb.append("\n");
+            }
+        } catch (Throwable t) {
+            sb.append("读取配置失败：").append(t);
+        }
+        if (sb.length() == 0) {
+            sb.append("当前配置文件里没有说明字段。\n\n"
+                    + "说明以 _说明 / _参数名 的形式写在 config.json 里，App 会忽略它们。\n"
+                    + "恢复方法：在电脑上运行 tools/annotate_cfg.py 重新生成后写回。");
+        }
+
+        TextView tv = new TextView(this);
+        tv.setText(sb.toString());
+        tv.setTextSize(12f);
+        tv.setLineSpacing(dp(4), 1f);
+        tv.setPadding(dp(24), dp(14), dp(24), dp(14));
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+
+        new AlertDialog.Builder(this)
+                .setTitle("配置参数说明")
+                .setView(sv)
+                .setPositiveButton("知道了", null)
                 .show();
     }
 
