@@ -68,6 +68,7 @@ public class ToolsOverlayService extends Service {
     private int recOn = -1;   // 录屏态未知 / 0 关 / 1 开
     private LinearLayout confirmView;   // 二次确认 overlay（复用 wm，不依赖 activity token）
     private WindowManager.LayoutParams confirmLp;
+    private Runnable statusHideToken;   // 提示自动隐藏的延迟任务句柄
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -149,8 +150,13 @@ public class ToolsOverlayService extends Service {
 
         card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(14), dp(12), dp(14), dp(12));
-        card.setBackground(round(0xE0101418, 20, 0x55FFFFFF));
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        // 卡片背景降到 25% 不透：盖在画面上只是淡淡一层，不挡剧
+        card.setBackground(round(0x40101418, 18, 0x33FFFFFF));
+        // 卡片最小宽度：保证四按钮横向一排时各自 sub 标签不折行
+        card.setMinimumWidth(dp(460));
+        // 给卡片一个最小宽度，四个按钮才能均匀撑开、sub 标签不被挤成竖排
+        card.setMinimumWidth(dp(430));
 
         // 标题行
         TextView title = new TextView(this);
@@ -161,40 +167,39 @@ public class ToolsOverlayService extends Service {
         card.addView(title);
 
         status = new TextView(this);
-        status.setText("就绪");
-        status.setTextColor(0xB0FFFFFF);
-        status.setTextSize(11);
+        status.setText("");
+        status.setTextColor(0xE8FFFFFF);
+        status.setTextSize(12);
+        status.setSingleLine(true);
+        status.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        status.setPadding(dp(8), dp(3), dp(8), dp(3));
+        status.setVisibility(View.GONE);
+        status.setBackground(round(0x66000000, 12, 0x33FFFFFF));
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        slp.topMargin = dp(2);
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        slp.topMargin = dp(8);
         card.addView(status, slp);
 
-        // 按钮 2×2
-        LinearLayout row1 = new LinearLayout(this);
-        row1.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout row2 = new LinearLayout(this);
-        row2.setOrientation(LinearLayout.HORIZONTAL);
+        // 四按钮一排（横向工具条）：各自铺满卡片宽度、右侧小标签说明
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rlp.topMargin = dp(10);
+        card.addView(row, rlp);
 
         btnMem = mkBtn("清内存", "释放后台", 0xFF4EA1FF, this::onMem);
         btnRec = mkBtn("录屏", "开 / 停", 0xFF4ADE80, this::onRec);
         btnReboot = mkBtn("重启", "热重启", 0xFF4EA1FF, this::onReboot);
         btnOff = mkBtn("关机", "待机", 0xFFFFB454, this::onOff);
 
-        row1.addView(btnMem, half());
-        row1.addView(btnRec, half());
-        row2.addView(btnReboot, half());
-        row2.addView(btnOff, half());
-        LinearLayout.LayoutParams rlp1 = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
-        rlp1.topMargin = dp(10);
-        LinearLayout.LayoutParams rlp2 = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
-        rlp2.topMargin = dp(8);
-        card.addView(row1, rlp1);
-        card.addView(row2, rlp2);
+        row.addView(btnMem, qtr());
+        row.addView(btnRec, qtr());
+        row.addView(btnReboot, qtr());
+        row.addView(btnOff, qtr());
 
-        // 卡片固定在默认位置（右上角）。若需移动改 config.json 的 tools 段即可。
-
+        // 卡片贴右上角放。盒子 1080p 宽 1920px、override 密度 220（dp 系数 1.375）。
+        // 直接 px 定位最稳，避开 dp 换算误差。
         lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -205,10 +210,9 @@ public class ToolsOverlayService extends Service {
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.START;
-        // 盒子 1080p 宽 1920px≈640dp；贴右上角放
-        lp.x = dp(596);
-        lp.y = dp(24);
+        lp.gravity = Gravity.TOP | Gravity.END;
+        lp.x = dp(16);          // 距右边缘 16dp
+        lp.y = dp(24);          // 距顶 24dp
 
         wm.addView(card, lp);
 
@@ -216,31 +220,39 @@ public class ToolsOverlayService extends Service {
         refreshRecState();
     }
 
-    /** 卡片按钮：可获焦 + 焦点高亮，遥控器上下左右选、OK 触发 */
+    /** 卡片按钮：可获焦 + 焦点高亮，遥控器左右选、OK 触发。
+     *  默认（无焦点）按钮近乎透明，只在获得焦点/按下时才亮，盖在画面上不挡剧。 */
     private View mkBtn(String t, String sub, int accent, Runnable act) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(14), dp(10), dp(14), dp(10));
+        box.setPadding(dp(12), dp(10), dp(12), dp(10));
         box.setClickable(true);
         box.setFocusable(true);
         box.setFocusableInTouchMode(false);
         int ac = accent;
-        box.setBackground(round(0xFF1A202A, 12, 0xFF2A3546));
+        // 无焦点：透明底 + 仅亮色描边；焦点：底提亮 18% + 高亮描边
+        box.setBackground(round(0x10FFFFFF, 12, 0x66FFFFFF));
         box.setOnFocusChangeListener((v, f) ->
-                v.setBackground(round(f ? 0xFF2A3546 : 0xFF1A202A, 12, f ? ac : 0xFF2A3546)));
+                v.setBackground(round(f ? 0x30FFFFFF : 0x10FFFFFF, 12,
+                        f ? ac : 0x66FFFFFF)));
 
         TextView a = new TextView(this);
         a.setText(t);
-        a.setTextColor(ac);
-        a.setTextSize(18);
+        a.setTextColor(0xEFFFFFFF);   // 白色为主、稍透明，不刺眼
+        a.setTextSize(16);
         a.setTypeface(Typeface.DEFAULT_BOLD);
         box.addView(a);
 
         TextView b = new TextView(this);
         b.setText(sub);
-        b.setTextColor(0xB08D95A5);
-        b.setTextSize(11);
-        box.addView(b);
+        b.setTextColor(0xB0FFFFFF);
+        b.setTextSize(10);
+        b.setSingleLine(true);
+        b.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        blp.topMargin = dp(1);
+        box.addView(b, blp);
 
         // 遥控器 OK：焦点在按钮上按中键/确定键时触发（触摸点按同样走这里）
         box.setOnKeyListener((v, code, ev) -> {
@@ -257,10 +269,13 @@ public class ToolsOverlayService extends Service {
         return box;
     }
 
-    private LinearLayout.LayoutParams half() {
+    /** 横向工具条里每个按钮占 1/4 宽（权重 1），高度随内容；右侧留 6dp 间距 */
+    private LinearLayout.LayoutParams qtr() {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         p.rightMargin = dp(6);
+        p.topMargin = dp(6);
+        p.bottomMargin = dp(2);
         return p;
     }
 
@@ -466,6 +481,15 @@ public class ToolsOverlayService extends Service {
     private void postStatus(String s) {
         if (status != null) {
             status.setText(s);
+            status.setVisibility(View.VISIBLE);
+            // 提示 2.5s 后自动隐藏，盖在画面上不留字
+            ui.removeCallbacksAndMessages(statusHideToken);
+            ui.postDelayed(statusHideToken = new Runnable() {
+                @Override
+                public void run() {
+                    if (status != null) status.setVisibility(View.GONE);
+                }
+            }, 2500);
         }
         Log.i(TAG, s);
     }
