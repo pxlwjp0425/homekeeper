@@ -15,9 +15,10 @@ import android.util.Log;
  * 发起方是录屏 App。对方超过 90 秒没有心跳，{@link OverlayService} 会自己恢复显示，
  * 免得录屏进程被杀之后浮层再也不回来。
  *
- * <p>手动触发（adb）：<br>
- * {@code am broadcast -a com.xiaopaitech.tvrecorder.REC_STATE --ez on true}<br>
- * {@code am broadcast -a com.xiaopaitech.tvrecorder.REC_STATE --ez on false}
+ * <p>手动触发（adb，需要 root —— 该广播受 signature 权限保护）：<br>
+ * {@code su -c "am broadcast -a com.xiaopaitech.tvrecorder.REC_STATE --ez on true"}<br>
+ * {@code su -c "am broadcast -a com.xiaopaitech.tvrecorder.REC_STATE --ez on false"}<br>
+ * 普通 adb shell 不是同签名、也没有该权限，会被系统拦掉。</p>
  */
 public class RecStateReceiver extends BroadcastReceiver {
 
@@ -25,6 +26,9 @@ public class RecStateReceiver extends BroadcastReceiver {
 
     /** 与录屏 App（tv-recorder）约定的 action */
     public static final String ACTION = "com.xiaopaitech.tvrecorder.REC_STATE";
+
+    /** 发送方必须具备的权限（signature 级，与 tv-recorder 同签名自动授予） */
+    public static final String PERM = "com.laopeng.homekeeper.permission.REC_STATE";
 
     @Override
     public void onReceive(Context ctx, Intent intent) {

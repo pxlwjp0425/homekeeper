@@ -6,7 +6,7 @@
 
 - 工程：零依赖 AGP 8.13.2，`JAVA_HOME=/d/dev/jdk-21.0.12.1+1`，`GRADLE_USER_HOME=/d/dev/gradle-home`，gradle-8.14.3
 - 包名 `com.xiaopaitech.wallpaperlauncher` / 主类 `com.laopeng.homekeeper.MainActivity`
-- 产物：本地 `dist/` 按版本归档（**构建产物不入库**，请自行构建）；当前 **v4.10.1**（versionCode 37）
+- 产物：本地 `dist/` 按版本归档（**构建产物不入库**，请自行构建）；当前 **v4.12.0**（versionCode 39）
 - 源码：`app/src/main/java/com/laopeng/homekeeper/` —— 入口 `MainActivity`，其余
   `ThemeStore`(配置模型) `Bing`(每日壁纸) `Sky`/`Lunar`(天气与农历) `OverlayService`(悬浮信息条)
   `ScrollPager`(翻页) `AppAdapter`/`FavAdapter`(网格) `BootReceiver` `AudioDiagReceiver` `Theme` `Target` `AppEntry`
@@ -1059,4 +1059,32 @@ chmod 771 "$D"; chmod 644 "$D"/*.jpg
 
 漏了 `restorecon`，文件权限看着全对，但 App 就是读不了；漏了 uid，`listFiles()`
 直接返回空。两个都踩过。
+
+## v4.12.0：悬浮工具条（位置 / 长按拖动 / 开关）
+
+工具条是 `ToolsOverlayService`（独立 overlay 窗口，盖在酷喵等任意 App 之上）。
+
+**交互定型：纯触摸，不接管遥控器**
+窗口 flags 恒为 `FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL`：
+- 不抢前台 App 的遥控器焦点（早期版本去掉 `NOT_FOCUSABLE` 让遥控能选按钮，
+  结果焦点被工具条锁死、移不到屏幕其他位置 —— 已废弃）；
+- 点工具条以外区域触摸直接穿透到视频；只有点中工具条内的按钮才触发动作。
+
+**位置：默认屏幕最上方、水平居中；长按可拖动**
+- `lp.gravity = TOP | LEFT`，默认 `x = (屏宽 - 卡宽)/2`、`y = dp(6)`（布局完成后在
+  `card.post` 里量真实宽高再定位，因为 `WRAP_CONTENT` 时窗口参数拿不到内容宽度）。
+- **长按约 0.42s 解锁拖动**，之后手指移动即 `updateViewLayout` 平移整卡，松手存
+  `SharedPreferences("tools_overlay", pos_x/pos_y)`，下次启动恢复（并夹在屏幕内）。
+- 手势挂在卡片**及其每个子 View** 上 —— 子按钮会先吃掉 `ACTION_DOWN`，只挂卡片收不到后续事件。
+  `OnTouchListener` 在拖动中返回 `true` 会跳过 `onTouchEvent`，正好避免拖动结束误触发点击。
+
+**四个小框宽度按内容自适应**
+先 `WRAP_CONTENT` 加进去，布局完成后再取四个按钮的 `measuredWidth` 最大值统一设成
+一样宽（既等大又不浪费空白，比原来写死 110dp 窄得多）。
+
+**开关：桌面设置菜单 + ✕ 都可以关**
+- 长按桌面时钟 →「桌面设置」→ 倒数第二项 `悬浮工具条 ✓（点击关闭）`：翻转
+  `config.json` 的 `tools.enabled`，存盘后 `reloadConfig() + syncTools()` 即时启停。
+- 点工具条最左的 `✕` 也会把 `tools.enabled` 写成 `false`（否则回桌面时
+  `syncOverlay()` 会按配置把它又拉起来），提示 0.9s 后收卡片并停 Service。
 

@@ -265,8 +265,16 @@ public class OverlayService extends Service {
         }
     };
 
+    /** 上次加载时配置文件的时间戳；没变就不重读（tick 每 15 秒一次，别在 main looper 上反复做 IO） */
+    private long cfgMtime = -1L;
+
     private void refreshCfg() {
         try {
+            long m = ThemeStore.file(this).lastModified();
+            if (m == cfgMtime && cfg != null) {
+                return;
+            }
+            cfgMtime = m;
             cfg = ThemeStore.load(this);
         } catch (Throwable ignored) {
         }
@@ -321,7 +329,10 @@ public class OverlayService extends Service {
         lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                // TYPE_APPLICATION_OVERLAY 是 API 26+；低版本只能用已废弃的 TYPE_PHONE
+                android.os.Build.VERSION.SDK_INT >= 26
+                        ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                        : WindowManager.LayoutParams.TYPE_PHONE,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
                 PixelFormat.TRANSLUCENT);

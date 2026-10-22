@@ -380,6 +380,19 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** 桌面设置菜单里的「悬浮工具条」开关：翻转 config.json 的 tools.enabled，存盘后即时启停。 */
+    private void toggleTools() {
+        final ThemeStore c = cfg;
+        if (c == null) return;
+        c.toolsEnabled = !c.toolsEnabled;
+        final boolean on = c.toolsEnabled;
+        saveConfigAsync(c.toJson(), () -> {
+            reloadConfig();
+            syncTools();
+            toast(on ? "悬浮工具条已打开" : "悬浮工具条已关闭");
+        });
+    }
+
     private final BroadcastReceiver pkgWatcher = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -611,6 +624,7 @@ public class MainActivity extends Activity {
                             "配色管理（图形化）",
                             "编辑配置文件",
                             (page == PAGE_FAV ? "前往「全部应用」页" : "前往「首页」"),
+                            ((cfg != null && cfg.toolsEnabled) ? "悬浮工具条  ✓（点击关闭）" : "悬浮工具条（已关，点击打开）"),
                             "切回当贝桌面"
                     }, (d, w) -> {
                         if (w == 0) {
@@ -631,6 +645,8 @@ public class MainActivity extends Activity {
                             showConfigEditor();
                         } else if (w == 8) {
                             switchPage(page == PAGE_FAV ? PAGE_ALL : PAGE_FAV, 0);
+                        } else if (w == 9) {
+                            toggleTools();
                         } else {
                             Target.launch(MainActivity.this);
                         }

@@ -459,14 +459,17 @@ final class Sky {
                 + "&timezone=Asia%2FShanghai";
         JSONObject o = new JSONObject(http(u));
         JSONObject cur = o.optJSONObject("current");
-        if (cur == null) {
+        double t = cur == null ? Double.NaN : cur.optDouble("temperature_2m", Double.NaN);
+        if (cur == null || Double.isNaN(t)) {
+            // 接口结构变了/字段缺失也要落一次时间戳：否则 stale() 永远为 true，
+            // 界面每 15 秒就发一次请求，永不退避
+            ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
+                    .putLong(K_TS, System.currentTimeMillis()).apply();
+            ts = System.currentTimeMillis();
+            Log.w(TAG, "sky: 响应缺少 current/温度，本次跳过");
             return;
         }
         int code = cur.optInt("weather_code", -1);
-        double t = cur.optDouble("temperature_2m", Double.NaN);
-        if (Double.isNaN(t)) {
-            return;
-        }
         String desc = wmo(code);
         String temp = Math.round(t) + "℃";
         summary = compose(desc, temp);

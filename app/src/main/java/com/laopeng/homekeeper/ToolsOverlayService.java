@@ -19,7 +19,9 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -31,8 +33,8 @@ import java.util.Locale;
  * （酷喵放剧时不切走、不打断，只是盖一块小工具卡片在最上层）。
  *
  * <p>和 {@link OverlayService}（纯显示、NOT_TOUCHABLE）不同，本条<b>可点、遥控器可导航</b>：
- * 焦点落在卡片上时上下左右能选按钮、OK 触发。底层 App 的遥控器焦点不受影响——
- * 卡片自身 {@code FLAG_NOT_TOUCH_MODAL}，只有点到卡片上才截获按键。</p>
+ * 窗口 {@code FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL}——不抢底层 App 的遥控器焦点、
+ * 点工具条外触摸完全穿透到 CIBN（不影响看电视），只有点中卡片上的按钮才触发动作。</p>
  *
  * <p>四个动作全后台执行，都不抢前台：
  * <ul>
@@ -43,7 +45,7 @@ import java.util.Locale;
  * </ul>
  * </p>
  *
- * <p>电源类是破坏性操作，故每次都要二次确认，防遥控器误触。开关由 config.json 的
+ * <p>电源类是破坏性操作，故每次都要二次确认，防误触。开关由 config.json 的
  * {@code tools.enabled} 控制，由 {@link MainActivity} 启停本 Service。</p>
  */
 public class ToolsOverlayService extends Service {
@@ -74,8 +76,25 @@ public class ToolsOverlayService extends Service {
     private LinearLayout confirmView;   // 二次确认 overlay（复用 wm，不依赖 activity token）
     private WindowManager.LayoutParams confirmLp;
     private Runnable statusHideToken;   // 提示自动隐藏的延迟任务句柄
-    private View closeBtn;              // 右上角关闭开关
-    private IconDrawable recIcon;        // 录屏按钮的 ▶/■ 图标
+    private View closeBtn;              // 关闭开关（触摸点按收起工具条）
+    private View recIcon;               // 录屏按钮的 ▶/■ 图标（独立 View，刷新时换 drawable）
+    private TextView recLabel;          // 录屏按钮主文字，随录态在 开始/停止 间切换
+
+    // ---- 长按拖动（触摸垂直方向移动工具条，位置记到 SharedPreferences）----
+    private static final String PREF = "tools_overlay";
+    private static final String PK_X = "pos_x";
+    private static final String PK_Y = "pos_y";
+    private boolean dragArmed;          // 长按已触发 => 接下来移动即拖动
+    private boolean dragging;           // 正在拖动
+    private float downRawX, downRawY;   // 按下时的屏幕坐标
+    private int dragStartX, dragStartY; // 按下瞬间窗口 lp.x / lp.y
+    private long downTime;
+    private final Runnable dragArmTask = () -> dragArmed = true;
+
+    // 工具条窗口永远 NOT_FOCUSABLE —— 不抢遥控器焦点、不挡底层 CIBN；只靠触摸点按触发。
+    private static final int FLAGS_IDLE =
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                    | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -157,7 +176,7 @@ public class ToolsOverlayService extends Service {
 
         card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(8), dp(8), dp(8), dp(8));
+        card.setPadding(dp(6), dp(6), dp(6), dp(6));
         // 外框背景降到 18% 不透：只是一层淡淡的框，把四个小框"框"起来，不挡画面
         card.setBackground(round(0x2E101418, 14, 0x22FFFFFF));
 
@@ -167,8 +186,8 @@ public class ToolsOverlayService extends Service {
         row.setGravity(Gravity.CENTER_VERTICAL);
 
         closeBtn = mkCloseBtn();
-        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(dp(54), dp(54));
-        clp.rightMargin = dp(6);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(dp(44), dp(46));
+        clp.rightMargin = dp(4);
         clp.gravity = Gravity.CENTER;
         row.addView(closeBtn, clp);
 
@@ -187,44 +206,164 @@ public class ToolsOverlayService extends Service {
         status.setGravity(Gravity.CENTER);
         row.addView(status, slp);
 
-        // 四个小框：定宽等高、四个完全一样大；副标签已去掉，只留主文字
+        // 四个小框：宽度按内容自适应（先 wrap_content，布局后统一成"刚好框住"的等宽），只留主文字
         btnMem = mkBtn("清内存", 0x998FB8E0, this::onMem, false);
         btnRec = mkBtn("录屏", 0x99A0E0B0, this::onRec, true);
         btnReboot = mkBtn("重启", 0x998FB8E0, this::onReboot, false);
         btnOff = mkBtn("关机", 0x99E0C08F, this::onOff, false);
 
-        row.addView(btnMem, eqBox());
-        row.addView(btnRec, eqBox());
-        row.addView(btnReboot, eqBox());
-        row.addView(btnOff, eqBox());
+        final View[] boxes = {btnMem, btnRec, btnReboot, btnOff};
+        for (View b : boxes) row.addView(b, eqBox());
 
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         card.addView(row, rlp);
 
-        // 卡片贴右上角放，尽量靠右上。盒子 1080p、override 密度 220（dp 系数 1.375）
+        // 工具条浮在屏幕最上方（默认水平居中），可长按拖动改位置
         lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 Build.VERSION.SDK_INT >= 26
                         ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                         : WindowManager.LayoutParams.TYPE_PHONE,
-                // 去掉 NOT_FOCUSABLE → 遥控器方向键能把焦点导航进工具条；
-                // 保留 NOT_TOUCH_MODAL → 点中卡片不挡 CIBN 触摸；焦点链保证按方向键能切回 CIBN
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                // 空闲态：不抢焦点、不模态 —— 遥控器焦点永远在 CIBN，工具条"只是盖着"，
+                //  不会把焦点锁在自己身上（修复"有工具条就移不到屏幕其他位置"的 bug）
+                FLAGS_IDLE,
                 PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.END;
-        lp.x = dp(8);           // 距右边缘更近，尽量靠右上
-        lp.y = dp(8);          // 单行后卡片更矮，距顶也可再近
+        lp.gravity = Gravity.TOP | Gravity.LEFT;
+        lp.x = 0;
+        lp.y = dp(6);
+
+        // 卡片空白处也吃触摸（工具条区域内点空白不该穿透到底下的视频）
+        card.setClickable(true);
 
         wm.addView(card, lp);
 
-        // 初始探测录屏态（查 tvrecorder 的 status 太慢，先用本地静态量；录屏 App 会广播 REC_STATE）
-        refreshRecState();
+        // 布局完成后再统一四框宽度 + 算居中位置（此时才量得到真实宽高）
+        card.post(() -> {
+            int maxW = 0;
+            for (View b : boxes) maxW = Math.max(maxW, b.getMeasuredWidth());
+            if (maxW > 0) {
+                for (View b : boxes) {
+                    LinearLayout.LayoutParams p = (LinearLayout.LayoutParams) b.getLayoutParams();
+                    if (p.width != maxW) {
+                        p.width = maxW;
+                        b.setLayoutParams(p);
+                    }
+                }
+            }
+            // 再等一帧让 setLayoutParams 生效，然后按真实尺寸定位
+            card.post(this::applyInitialPos);
+        });
 
-        // 焦点链：焦点在工具条最后一个按钮时，按方向键把焦点交回给底层 CIBN
-        setupFocusChain();
+        // 长按拖动：卡片及所有子按钮都挂同一套手势识别
+        setupDrag(card);
+
+        // 初始探测录屏态（查 tvrecorder 的 status 太慢，先用本地乐观态；触摸点一下就即时切图标+文字）
+        refreshRecState();
     }
+
+    /** 初始位置：默认屏幕最上方水平居中；若用户拖动过，则恢复上次保存的位置（并夹在屏幕内）。 */
+    private void applyInitialPos() {
+        if (wm == null || card == null || lp == null) return;
+        final int sw = getResources().getDisplayMetrics().widthPixels;
+        final int sh = getResources().getDisplayMetrics().heightPixels;
+        final int cw = card.getWidth();
+        final int ch = card.getHeight();
+        android.content.SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
+        int x = sp.getInt(PK_X, Integer.MIN_VALUE);
+        int y = sp.getInt(PK_Y, Integer.MIN_VALUE);
+        if (x == Integer.MIN_VALUE) x = Math.max(0, (sw - cw) / 2);   // 默认：水平居中
+        if (y == Integer.MIN_VALUE) y = dp(6);                        // 默认：贴屏幕最上面
+        lp.x = clampI(x, 0, Math.max(0, sw - cw));
+        lp.y = clampI(y, 0, Math.max(0, sh - ch));
+        try {
+            wm.updateViewLayout(card, lp);
+        } catch (Throwable t) {
+            Log.w(TAG, "update pos fail: " + t);
+        }
+    }
+
+    /** 给卡片和它的每个子 View 都挂上"长按解锁 + 拖动"手势（子按钮会先吃掉 DOWN，必须逐个挂）。 */
+    private void setupDrag(View v) {
+        v.setOnTouchListener(this::onCardTouch);
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                setupDrag(g.getChildAt(i));
+            }
+        }
+    }
+
+    /** 长按约 0.42 秒后，手指移动即拖动整个工具条；未长按前的滑动/抖动不触发，按钮照常响应点击。 */
+    private boolean onCardTouch(View v, MotionEvent e) {
+        if (wm == null || card == null || lp == null) return false;
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                downRawX = e.getRawX();
+                downRawY = e.getRawY();
+                dragStartX = lp.x;
+                dragStartY = lp.y;
+                downTime = System.currentTimeMillis();
+                dragging = false;
+                dragArmed = false;
+                ui.removeCallbacks(dragArmTask);
+                ui.postDelayed(dragArmTask, 420L);
+                return false;
+            case MotionEvent.ACTION_MOVE: {
+                float dx = e.getRawX() - downRawX;
+                float dy = e.getRawY() - downRawY;
+                if (!dragArmed) {
+                    int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+                    if (Math.abs(dx) > slop || Math.abs(dy) > slop) {
+                        ui.removeCallbacks(dragArmTask);   // 长按未成，视为普通点击手势
+                    }
+                    return false;
+                }
+                if (!dragging && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) dragging = true;
+                if (!dragging) return false;
+                final int sw = getResources().getDisplayMetrics().widthPixels;
+                final int sh = getResources().getDisplayMetrics().heightPixels;
+                lp.x = clampI(dragStartX + (int) dx, 0, Math.max(0, sw - card.getWidth()));
+                lp.y = clampI(dragStartY + (int) dy, 0, Math.max(0, sh - card.getHeight()));
+                try {
+                    wm.updateViewLayout(card, lp);
+                } catch (Throwable ignored) {
+                }
+                return true;   // 拖动中：消费事件，避免同时触发按钮点击
+            }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL: {
+                ui.removeCallbacks(dragArmTask);
+                final boolean wasDrag = dragging;
+                dragArmed = false;
+                dragging = false;
+                if (wasDrag) {
+                    savePos();
+                    postStatus("位置已保存");
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** 记住拖动后的位置，下次启动直接恢复。 */
+    private void savePos() {
+        try {
+            getSharedPreferences(PREF, MODE_PRIVATE).edit()
+                    .putInt(PK_X, lp.x)
+                    .putInt(PK_Y, lp.y)
+                    .apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static int clampI(int v, int lo, int hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
+    }
+
 
     /** 卡片小框：可获焦 + 焦点高亮，遥控器左右选、OK 触发。
      *  定宽等高（四个一样大）、文字居中、淡色不夺目；录屏框带 ▶/■ 图标。 */
@@ -232,57 +371,43 @@ public class ToolsOverlayService extends Service {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.HORIZONTAL);
         box.setGravity(Gravity.CENTER);
-        box.setPadding(dp(8), dp(6), dp(8), dp(6));
+        box.setPadding(dp(9), dp(4), dp(9), dp(4));
         box.setClickable(true);
-        box.setFocusable(true);
-        box.setFocusableInTouchMode(false);
-        int ac = accent;
-        // 无焦点：透明底 + 淡描边；焦点：底提亮 + 高亮描边
         box.setBackground(round(0x10FFFFFF, 10, 0x44FFFFFF));
-        box.setOnFocusChangeListener((v, f) ->
-                v.setBackground(round(f ? 0x30FFFFFF : 0x10FFFFFF, 10,
-                        f ? ac : 0x44FFFFFF)));
 
-        // 录屏框：根据当前录态在文字前显示 ▶（开始）或 ■（停止）
+        // 录屏框：根据当前录态在文字前显示 ▶（开始）或 ■（停止）。
+        // 图标是独立 View（非背景），刷新时换它的 drawable 才能立即可见。
         if (isRec) {
-            recIcon = new IconDrawable(getResources());
-            recIcon.setRecorded(recOn);
-            View iconView = new View(this);
-            int iw = recIcon.getIntrinsicWidth(), ih = recIcon.getIntrinsicHeight();
-            iconView.setBackground(recIcon);
-            LinearLayout.LayoutParams iclp = new LinearLayout.LayoutParams(iw, ih);
+            recIcon = new View(this);
+            int u = (int) (getResources().getDisplayMetrics().density * 2);
+            int size = u * 9;
+            LinearLayout.LayoutParams iclp = new LinearLayout.LayoutParams(size, size);
             iclp.rightMargin = dp(5);
             iclp.gravity = Gravity.CENTER_VERTICAL;
-            box.addView(iconView, iclp);
+            box.addView(recIcon, iclp);
+            applyRecIcon();
         }
 
         TextView a = new TextView(this);
-        a.setText(t);
+        a.setText(isRec ? (recOn == 1 ? "停止" : "开始") : t);
         a.setTextColor(0x99FFFFFF);   // 淡色、不夺目
         a.setTextSize(15);
         a.setGravity(Gravity.CENTER);
         a.setSingleLine(true);
+        if (isRec) {
+            recLabel = a;   // 录屏主文字，随录态切换 开始/停止
+        }
         box.addView(a);
 
-        // 遥控器 OK：焦点在按钮上按中键/确定键时触发（触摸点按同样走这里）
-        box.setOnKeyListener((v, code, ev) -> {
-            if (ev.getAction() == KeyEvent.ACTION_DOWN
-                    && (code == KeyEvent.KEYCODE_DPAD_CENTER
-                        || code == KeyEvent.KEYCODE_ENTER
-                        || code == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
-                act.run();
-                return true;
-            }
-            return false;
-        });
         box.setOnClickListener(v -> act.run());
         return box;
     }
 
-    /** 四个小框等宽等高：固定 110dp 宽、54dp 高，互相 6dp 间距，保证一样大 */
+    /** 四个小框：宽度先 wrap_content（布局后统一成"刚好框住内容"的同一宽度），高度统一 46dp，间距 4dp */
     private LinearLayout.LayoutParams eqBox() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(110), dp(54));
-        p.rightMargin = dp(6);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(46));
+        p.rightMargin = dp(4);
         p.gravity = Gravity.CENTER;
         return p;
     }
@@ -299,44 +424,26 @@ public class ToolsOverlayService extends Service {
      *  焦点在工具条时，按「下」或「左」就把焦点交回给底层 CIBN（往左下走都是"离开"方向），
      *  其余方向键（上/右）在工具条内部导航。这样看剧时遥控焦点不丢，又能随时调工具条。
      *  额外处理：焦点落在 card 本身（无子按钮被选中）时，OK 键默认触发「清内存」。 */
-    private void setupFocusChain() {
-        card.setFocusable(true);
-        card.setFocusableInTouchMode(true);
-        // 按「下 / 左」离开工具条
-        final int[] leaveCodes = {
-                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT
-        };
-        card.setOnKeyListener((v, code, ev) -> {
-            if (ev.getAction() != KeyEvent.ACTION_DOWN) return false;
-            for (int c : leaveCodes) {
-                if (code == c) {
-                    ui.postDelayed(() -> { if (card != null) card.clearFocus(); }, 0);
-                    postStatus("回到酷喵");
-                    return true;
-                }
-            }
-            // 焦点在 card 自身（未落到子按钮）时，OK/中键默认触发清内存
-            if ((code == KeyEvent.KEYCODE_DPAD_CENTER
-                    || code == KeyEvent.KEYCODE_ENTER
-                    || code == KeyEvent.KEYCODE_NUMPAD_ENTER)
-                    && v.hasFocus()) {
-                onMem();
-                return true;
-            }
-            return false;
-        });
-        // 初始焦点落到工具条第一个按钮，遥控器一按方向键即可进入
-        ui.postDelayed(() -> {
-            if (closeBtn != null) closeBtn.requestFocus();
-        }, 100);
-    }
-
     // ---------------- 动作 ----------------
 
     private void refreshRecState() {
         recOn = OverlayService.isRecording() ? 1 : 0;
-        if (recIcon != null) {
-            recIcon.setRecorded(recOn == 1 ? 1 : 0);   // 图标随录态在 ▶（未录）/ ■（录中）间切换
+        applyRecIcon();
+    }
+
+    /** 按当前录态把录屏框的图标 drawable 换成 ▶（未录）或 ■（录中）。
+     *  图标是独立 View，必须 set 新的 drawable 才立即可见（背景 drawable 的 invalidate 不重绘）。 */
+    private void applyRecIcon() {
+        if (recIcon == null) return;
+        recIcon.setBackground(new IconDrawable(getResources(), recOn == 1));
+        // 同步副文字：开始 ↔ 停止
+        refreshRecSub();
+    }
+
+    /** 录屏框文字随录态在「开始」/「停止」间切换（图标同步在 ▶/■ 间切换） */
+    private void refreshRecSub() {
+        if (recLabel != null) {
+            recLabel.setText(recOn == 1 ? "停止" : "开始");
         }
     }
 
@@ -349,14 +456,22 @@ public class ToolsOverlayService extends Service {
     }
 
     private void onRec() {
-        refreshRecState();
-        final boolean on = recOn == 1;   // 现在录着 → 停；没录 → 开
+        // 本地乐观态：点一下立刻在 ▶/■ 与 开始/停止 间切换、并即时显示，不再依赖 homekeeper
+        // 自己没人写的 isRecording()。广播发给 tvrecorder 真正录；失败再回滚图标。
+        final boolean on = recOn == 1;          // 当前乐观态=开 → 本次停；否则开
+        recOn = on ? 0 : 1;                     // 立即翻转（图标+文字即时可见）
+        applyRecIcon();
         postStatus(on ? "停止录屏…" : "开始录屏…");
         new Thread(() -> {
             final boolean ok = sendCtrl(PKG_TVREC, RCV_TVREC, ACT_TVREC, on ? "stop" : "start", null);
             ui.post(() -> {
-                postStatus(ok ? (on ? "已停止录屏" : "已启动录屏") : "录屏操作失败（该 App 未装？）");
-                refreshRecState();
+                if (!ok) {                      // 失败回滚乐观态
+                    recOn = on ? 1 : 0;
+                    applyRecIcon();
+                    postStatus("录屏操作失败（该 App 未装？）");
+                } else {
+                    postStatus(on ? "已停止录屏" : "已启动录屏");
+                }
             });
         }, "tool-rec").start();
     }
@@ -368,31 +483,29 @@ public class ToolsOverlayService extends Service {
         c.setTextColor(0x99FFFFFF);
         c.setTextSize(15);
         c.setGravity(Gravity.CENTER);
-        c.setFocusable(true);
         c.setClickable(true);
         c.setBackground(round(0x10FFFFFF, 10, 0x33FFFFFF));
-        c.setOnFocusChangeListener((v, f) ->
-                v.setBackground(round(f ? 0x30FFFFFF : 0x10FFFFFF, 10,
-                        f ? 0x99FFFFFF : 0x33FFFFFF)));
-        c.setOnKeyListener((v, code, ev) -> {
-            if (ev.getAction() == KeyEvent.ACTION_DOWN
-                    && (code == KeyEvent.KEYCODE_DPAD_CENTER
-                        || code == KeyEvent.KEYCODE_ENTER
-                        || code == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
-                onToggleClose();
-                return true;
-            }
-            return false;
-        });
         c.setOnClickListener(v -> onToggleClose());
         return c;
     }
 
-    /** 关闭/重新展开工具条。关闭即把卡片移走；再点（若还留着开关）则重新展开。 */
+    /** 关闭工具条：点 ✕ 同时把 config.json 的 {@code tools.enabled} 写 false，
+     *  否则回到桌面时 {@link MainActivity#syncOverlay()} 会按配置又把它拉起来。
+     *  要再打开：桌面设置菜单里的「悬浮工具条」一项。 */
     private void onToggleClose() {
         if (card == null) return;
-        postStatus("工具条已关闭");
-        hideCard();
+        postStatus("工具条已关闭（桌面设置可再开）");
+        new Thread(() -> {
+            try {
+                ThemeStore c = ThemeStore.load(this);
+                c.toolsEnabled = false;
+                c.save(this, c.toJson());
+            } catch (Throwable t) {
+                Log.w(TAG, "save tools.enabled=false fail: " + t);
+            }
+        }, "tool-off").start();
+        // 等一下让提示看得见，再收卡片
+        ui.postDelayed(this::hideCard, 900);
     }
 
     private void hideCard() {
@@ -425,7 +538,7 @@ public class ToolsOverlayService extends Service {
         private int recorded;
         private final int w, h;
 
-        IconDrawable(android.content.res.Resources r) {
+        IconDrawable(android.content.res.Resources r, boolean recorded) {
             int u = (int) (r.getDisplayMetrics().density * 2);
             w = u * 9; h = u * 9;
             p.setStyle(android.graphics.Paint.Style.FILL);
@@ -440,11 +553,7 @@ public class ToolsOverlayService extends Service {
             // 方块 ■
             float s = u * 2.0f;
             rect.addRect(cx - s, cy - s, cx + s, cy + s, Path.Direction.CW);
-        }
-
-        void setRecorded(int on) {
-            recorded = on;
-            invalidateSelf();
+            this.recorded = recorded ? 1 : 0;
         }
 
         @Override

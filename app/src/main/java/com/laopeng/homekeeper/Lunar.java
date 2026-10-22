@@ -29,6 +29,9 @@ final class Lunar {
 
     /** 今天的农历，例如 {@code 农历八月十九}；取不到时返回空串 */
     static String today() {
+        if (android.os.Build.VERSION.SDK_INT < 24) {
+            return "";      // android.icu.util.ChineseCalendar 是 API 24+，低版本直接不出这行
+        }
         try {
             ChineseCalendar cc = new ChineseCalendar();
             cc.setTime(new Date());
