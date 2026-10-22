@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+      录屏状态广播的专用权限：只有同签名的 tv-recorder 能发（debug 证书两边一致）。
+      以前 RecStateReceiver 是 exported 且零保护，任意应用一条广播就能把桌面顶栏藏起来。
+    -->
+    <permission
+        android:name="com.laopeng.homekeeper.permission.REC_STATE"
+        android:protectionLevel="signature" />
+
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- 顶栏天气：请求 open-meteo / ipinfo.io（都是 HTTPS）。 -->
@@ -87,6 +95,14 @@
             android:enabled="true"
             android:exported="false" />
 
+        <!-- 可交互悬浮工具条：清内存 / 录屏开关 / 重启 / 关机，浮在其它 App 之上（v4.11）。
+             复用 OverlayService 的 SYSTEM_ALERT_WINDOW 授权；由 MainActivity 按
+             config.json 的 tools.enabled 启停。 -->
+        <service
+            android:name=".ToolsOverlayService"
+            android:enabled="true"
+            android:exported="false" />
+
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
@@ -103,7 +119,8 @@
         <receiver
             android:name=".RecStateReceiver"
             android:enabled="true"
-            android:exported="true">
+            android:exported="true"
+            android:permission="com.laopeng.homekeeper.permission.REC_STATE">
             <intent-filter>
                 <action android:name="com.xiaopaitech.tvrecorder.REC_STATE" />
             </intent-filter>

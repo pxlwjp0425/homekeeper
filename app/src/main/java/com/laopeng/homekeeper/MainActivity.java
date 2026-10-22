@@ -207,6 +207,8 @@ public class MainActivity extends Activity {
     private volatile Drawable wpDrawable;
     /** {@link #wpDrawable} 对应的路径，用来判断缓存是否还有效 */
     private volatile String wpDrawablePath = "";
+    /** 正在后台解码的壁纸路径（防止同一个文件被反复提交解码任务） */
+    private volatile String wpDecodingPath = "";
     /** 上次自动换图成功时「本地今天」的 yyyyMMdd；等于今天就不再重复抓 */
     private volatile String wpAutoDay = "";
     /** 上次应用的图在 Bing 侧的 {@code startdate}；接口给出的还是这个值就说明没出新图 */
@@ -355,6 +357,24 @@ public class MainActivity extends Activity {
                 }
             } else if (OverlayService.running()) {
                 OverlayService.stop(this);
+            }
+        } catch (Throwable ignored) {
+        }
+        syncTools();
+    }
+
+    /** 可交互悬浮工具条（清内存/录屏/重启/关机）：由 config.json 的 tools.enabled 启停。
+     *  复用同一套 SYSTEM_ALERT_WINDOW 授权，和 OverlayService 并列管理。 */
+    private void syncTools() {
+        try {
+            final ThemeStore c = cfg;
+            final boolean want = c != null && c.toolsEnabled && OverlayService.canDraw(this);
+            if (want) {
+                if (!ToolsOverlayService.running()) {
+                    ToolsOverlayService.start(this);
+                }
+            } else if (ToolsOverlayService.running()) {
+                ToolsOverlayService.stop(this);
             }
         } catch (Throwable ignored) {
         }
@@ -653,10 +673,11 @@ public class MainActivity extends Activity {
         try {
             IntentFilter rf = new IntentFilter(RecStateReceiver.ACTION);
             if (Build.VERSION.SDK_INT >= 33) {
-                // 广播是别的 App 发的，必须 EXPORTED 才收得到
-                registerReceiver(recStateRx, rf, Context.RECEIVER_EXPORTED);
+                // 广播是别的 App 发的，必须 EXPORTED 才收得到；
+                // 同时用 signature 权限限定发送方，否则任何应用都能把顶栏藏起来
+                registerReceiver(recStateRx, rf, RecStateReceiver.PERM, null, Context.RECEIVER_EXPORTED);
             } else {
-                registerReceiver(recStateRx, rf);
+                registerReceiver(recStateRx, rf, RecStateReceiver.PERM, null);
             }
         } catch (Throwable ignored) {
         }
@@ -2098,6 +2119,26 @@ public class MainActivity extends Activity {
             if (!f.exists() || f.length() < 20000) {
                 return null;
             }
+            // 主线程不做解码：先返回 null（纯色撑着），后台解完再重绘一次。
+            // 1920 宽的 JPEG 解码要几十到几百毫秒，放在点击/onResume 里会明显掉帧。
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                if (!p.equals(wpDecodingPath)) {
+                    wpDecodingPath = p;
+                    new Thread(() -> {
+                        final Bitmap b = Bing.decode(f, 1920);
+                        runOnUiThread(() -> {
+                            wpDecodingPath = "";
+                            if (b == null) {
+                                return;
+                            }
+                            wpDrawable = new Bing.CropDrawable(b);
+                            wpDrawablePath = p;
+                            applyTheme(themeIdx);
+                        });
+                    }, "wp-decode").start();
+                }
+                return null;
+            }
             // 只解到 1920 宽：1080p 电视够用，UHD 原图解码后 33MB 盒子扛不住
             final Bitmap b = Bing.decode(f, 1920);
             if (b == null) {
@@ -2446,19 +2487,40 @@ public class MainActivity extends Activity {
         return s.length() > max ? s.substring(0, max) + "…" : s;
     }
 
+    /**
+     * 后台保存配置，成功后再回主线程执行 after。
+     *
+     * <p>本机 /sdcard 对 App 是 EPERM，save() 会绕 adb 落盘并轮询校验，最长 8 秒。
+     * 以前这些都是同步跑在主线程上（换壁纸/切主题必卡甚至 ANR），现在统一走这里。</p>
+     */
+    private void saveConfigAsync(final String json, final Runnable after) {
+        final ThemeStore c = cfg;
+        if (c == null) {
+            if (after != null) after.run();
+            return;
+        }
+        new Thread(() -> {
+            final boolean ok = c.save(MainActivity.this, json);
+            final String err = c.lastError;
+            runOnUiThread(() -> {
+                if (!ok) {
+                    toast("保存失败：" + err);
+                    return;
+                }
+                if (after != null) after.run();
+            });
+        }, "cfg-save").start();
+    }
+
     /** 改 config.json 里的 {@code wallpaper.mode} 并立即重绘（写盘失败只提示、不影响当前画面） */
     private void setWallpaperMode(String mode) {
-        try {
-            final ThemeStore c = cfg;
-            if (c != null) {
-                c.wpMode = mode;
-                if (!c.save(this, c.toJson())) {
-                    toast("配置写入失败：" + c.lastError);
-                }
-            }
-        } catch (Throwable ignored) {
+        final ThemeStore c = cfg;
+        if (c == null) {
+            reloadConfig();
+            return;
         }
-        reloadConfig();
+        c.wpMode = mode;
+        saveConfigAsync(c.toJson(), this::reloadConfig);
     }
 
     /**
@@ -2667,15 +2729,31 @@ public class MainActivity extends Activity {
     }
 
     /** 顺手把图写进系统壁纸（部分盒子没有壁纸服务，失败静默） */
-    private void trySetSystemWallpaper(File f) {
+    private void trySetSystemWallpaper(final File f) {
+        // 2560 宽的 UHD 图解码 + setBitmap 在主线程会明显掉帧，低内存盒子上直接 OOM
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            new Thread(() -> trySetSystemWallpaper(f), "set-sys-wallpaper").start();
+            return;
+        }
+        Bitmap b = null;
         try {
-            final Bitmap b = Bing.decode(f, 2560);
+            b = Bing.decode(f, 2560);
             if (b == null) {
                 return;
             }
-            android.app.WallpaperManager.getInstance(this).setBitmap(b);
+            // getInstance(Context) 是 API 24+；老系统走 getSystemService
+            android.app.WallpaperManager wm = android.os.Build.VERSION.SDK_INT >= 24
+                    ? android.app.WallpaperManager.getInstance(this)
+                    : (android.app.WallpaperManager) getSystemService(WALLPAPER_SERVICE);
+            if (wm != null) {
+                wm.setBitmap(b);
+            }
         } catch (Throwable t) {
             android.util.Log.w(TAG, "set system wallpaper failed: " + t);
+        } finally {
+            if (b != null && !b.isRecycled()) {
+                b.recycle();
+            }
         }
     }
 
@@ -2754,7 +2832,7 @@ public class MainActivity extends Activity {
                     final ThemeStore c = cfg;
                     if (c != null && !"color".equalsIgnoreCase(c.wpMode)) {
                         c.wpMode = "color";
-                        c.save(this, c.toJson());
+                        saveConfigAsync(c.toJson(), null);
                     }
                     applyTheme(w);
                     d.dismiss();
@@ -2854,9 +2932,10 @@ public class MainActivity extends Activity {
                 })
                 .setNeutralButton("恢复默认", (d, w) -> {
                     try {
-                        cfg.save(MainActivity.this, ThemeStore.DEFAULT_JSON);
-                        reloadConfig();
-                        toast("已恢复默认配置");
+                        saveConfigAsync(ThemeStore.DEFAULT_JSON, () -> {
+                            reloadConfig();
+                            toast("已恢复默认配置");
+                        });
                     } catch (Throwable t) {
                         toast("恢复失败");
                     }
@@ -3024,12 +3103,10 @@ public class MainActivity extends Activity {
                 });
                 dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
                     try {
-                        if (cfg != null && cfg.save(this, ThemeStore.DEFAULT_JSON)) {
+                        saveConfigAsync(ThemeStore.DEFAULT_JSON, () -> {
                             reloadConfig();
                             toast("已恢复默认配色");
-                        } else {
-                            toast("恢复失败");
-                        }
+                        });
                     } catch (Throwable t) {
                         toast("恢复失败");
                     }
@@ -3330,15 +3407,13 @@ public class MainActivity extends Activity {
                         } else {
                             cfg.themes.add(nt);
                         }
-                        int newIdx = index >= 0 ? index : cfg.themes.size() - 1;
-                        if (!cfg.save(MainActivity.this, cfg.toJson())) {
-                            toast("保存失败：" + cfg.lastError);
-                            return;
-                        }
-                        reloadConfig();
-                        applyTheme(newIdx);
-                        toast("已保存并生效：" + nt.name);
-                        ui.post(MainActivity.this::showThemeManager);
+                        final int newIdx = index >= 0 ? index : cfg.themes.size() - 1;
+                        saveConfigAsync(cfg.toJson(), () -> {
+                            reloadConfig();
+                            applyTheme(newIdx);
+                            toast("已保存并生效：" + nt.name);
+                            ui.post(MainActivity.this::showThemeManager);
+                        });
                     } catch (Throwable t) {
                         toast("保存失败");
                     }
@@ -3352,13 +3427,11 @@ public class MainActivity extends Activity {
                         return;
                     }
                     cfg.themes.remove(index);
-                    if (!cfg.save(MainActivity.this, cfg.toJson())) {
-                        toast("删除失败：" + cfg.lastError);
-                        return;
-                    }
-                    reloadConfig();
-                    toast("已删除");
-                    ui.post(MainActivity.this::showThemeManager);
+                    saveConfigAsync(cfg.toJson(), () -> {
+                        reloadConfig();
+                        toast("已删除");
+                        ui.post(MainActivity.this::showThemeManager);
+                    });
                 } catch (Throwable t) {
                     toast("删除失败");
                 }

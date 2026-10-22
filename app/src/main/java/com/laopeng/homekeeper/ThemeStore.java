@@ -130,6 +130,22 @@ final class ThemeStore {
     /** 文字是否带投影（浅色画面上也能看清） */
     boolean ovShadow = true;
 
+    // ---- 悬浮工具条（v4.11）：清内存 / 录屏开关 / 重启 / 关机，浮在其它 App 之上 ----
+    /** 是否显示可交互悬浮工具条（需 SYSTEM_ALERT_WINDOW，见 ToolsOverlayService） */
+    boolean toolsEnabled = false;
+    /** 工具条卡片距屏幕左/上边缘（dp） */
+    int toolsMarginDp = 24;
+    /**
+     * 重启 / 关机的完整 shell 命令（走本机 adbd 执行）。
+     * 该 ROM 的 reboot 需 root，普通 shell 会被拒，故默认填 usrchan root 通道：
+     * 重启 = {@code echo <口令> | /system/xbin/usrchan root sh -c 'reboot'}
+     * 关机 = {@code echo <口令> | /system/xbin/usrchan root sh -c 'reboot -p'}
+     * 口令放 config.json（用户可改、已入库但属本机私有），不写死在源码里。
+     * 留空则工具条里对应按钮禁用。
+     */
+    String toolsRebootCmd = "";
+    String toolsOffCmd = "";
+
     // ---- 壁纸（v4.6）：纯色/渐变 还是 Bing 每日一图 ----
     /** 壁纸模式：{@code color}（用 themes 的纯色/渐变）| {@code bing}（Bing 每日一图，本地已选的那张） */
     String wpMode = "color";
@@ -187,29 +203,29 @@ final class ThemeStore {
         if (ctx == null) {
             return ext;
         }
-        if (ctx instanceof Activity) {
+        // 探测结果必须与「调用者是不是 Activity」无关：
+        // 以前只有 Activity 才探测，桌面判定外置不可写走私有目录、悬浮条（Service）却读 /sdcard，
+        // 两边各写各的配置 —— 改字号/开关在悬浮条上永远不生效。
+        if (!sDirProbeDone) {
             // 直接落盘探测：能真正打开外置目录才用外置，否则退回私有目录
-            if (!sDirProbeDone) {
-                try {
-                    new File(Environment.getExternalStorageDirectory(), DIR_NAME).mkdirs();
-                    File probe = new File(Environment.getExternalStorageDirectory(),
-                            DIR_NAME + "/.writeprobe_" + Long.toString(System.currentTimeMillis(), 36));
-                    java.io.FileOutputStream fo = new java.io.FileOutputStream(probe, true);
-                    fo.close();
-                    probe.delete();
-                    sUseExtDir = true;
-                } catch (Throwable ignored) {
-                    sUseExtDir = false;   // 外置打不开 → 用私有目录
-                }
-                sDirProbeDone = true;
+            try {
+                new File(Environment.getExternalStorageDirectory(), DIR_NAME).mkdirs();
+                File probe = new File(Environment.getExternalStorageDirectory(),
+                        DIR_NAME + "/.writeprobe_" + Long.toString(System.currentTimeMillis(), 36));
+                java.io.FileOutputStream fo = new java.io.FileOutputStream(probe, true);
+                fo.close();
+                probe.delete();
+                sUseExtDir = true;
+            } catch (Throwable ignored) {
+                sUseExtDir = false;   // 外置打不开 → 用私有目录
             }
-            if (sUseExtDir) {
-                return ext;
-            }
-            // 私有目录：getFilesDir() 已含 /files，再挂一级 homekeeper 子目录避免撞别的文件
-            return new File(ctx.getFilesDir(), DIR_NAME + "/" + FILE_NAME);
+            sDirProbeDone = true;
         }
-        return ext;
+        if (sUseExtDir) {
+            return ext;
+        }
+        // 私有目录：getFilesDir() 已含 /files，再挂一级 homekeeper 子目录避免撞别的文件
+        return new File(ctx.getFilesDir(), DIR_NAME + "/" + FILE_NAME);
     }
 
     /** 外置配置目录（用于提示用户去哪改文件） */
@@ -374,6 +390,20 @@ final class ThemeStore {
                 ovDateSizeSp = ov.optInt("dateSizeSp", ovDateSizeSp);
                 ovBgAlpha = ov.optInt("bgAlpha", ovBgAlpha);
                 ovShadow = ov.optBoolean("shadow", ovShadow);
+            }
+
+            JSONObject tl = o.optJSONObject("tools");
+            if (tl != null) {
+                toolsEnabled = tl.optBoolean("enabled", toolsEnabled);
+                toolsMarginDp = tl.optInt("marginDp", toolsMarginDp);
+                String rc = tl.optString("rebootCmd", null);
+                if (rc != null) {
+                    toolsRebootCmd = rc.trim();
+                }
+                String oc = tl.optString("offCmd", null);
+                if (oc != null) {
+                    toolsOffCmd = oc.trim();
+                }
             }
 
             JSONObject wp = o.optJSONObject("wallpaper");
@@ -543,6 +573,13 @@ final class ThemeStore {
             ov.put("shadow", ovShadow);
             o.put("overlay", ov);
 
+            JSONObject tl = new JSONObject();
+            tl.put("enabled", toolsEnabled);
+            tl.put("marginDp", toolsMarginDp);
+            tl.put("rebootCmd", toolsRebootCmd);
+            tl.put("offCmd", toolsOffCmd);
+            o.put("tools", tl);
+
             JSONObject wp = new JSONObject();
             wp.put("mode", wpMode);
             wp.put("bingMkt", bingMkt);
@@ -592,12 +629,33 @@ final class ThemeStore {
             // 因此主线程场景下丢到子线程执行并同步等结果。
             boolean ok;
             if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                // 兜底：主线程最多等 1.5 秒。saveViaAdb 内部要轮询校验（最长 4 秒），
+                // 以前这里 join(8000)，等于在主线程上等满 8 秒 —— 必 ANR。
+                // 调用方现在都已改成后台保存，这条路径只是防漏网。
                 final boolean[] r = {false};
-                Thread th = new Thread(() -> r[0] = saveViaAdb(ctx, jsonText), "cfg-save-adb");
+                final boolean[] done = {false};
+                final Object lock = new Object();
+                Thread th = new Thread(() -> {
+                    boolean v = saveViaAdb(ctx, jsonText);
+                    synchronized (lock) {
+                        r[0] = v;
+                        done[0] = true;
+                        lock.notifyAll();
+                    }
+                }, "cfg-save-adb");
                 th.start();
-                try {
-                    th.join(8000);
-                } catch (InterruptedException ignored) {
+                synchronized (lock) {
+                    try {
+                        if (!done[0]) lock.wait(1500);
+                    } catch (InterruptedException ignored) {
+                    }
+                }
+                if (!done[0]) {
+                    // 还没落完盘：内存里先生效，后台线程继续写完
+                    parse(jsonText);
+                    lastError = null;
+                    Log.i(TAG, "save dispatched to background (adb slow)");
+                    return true;
                 }
                 ok = r[0];
             } else {
