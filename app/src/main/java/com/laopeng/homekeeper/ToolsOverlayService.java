@@ -4,8 +4,13 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Canvas;
+import android.graphics.ColorFilter;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Handler;
@@ -69,6 +74,8 @@ public class ToolsOverlayService extends Service {
     private LinearLayout confirmView;   // 二次确认 overlay（复用 wm，不依赖 activity token）
     private WindowManager.LayoutParams confirmLp;
     private Runnable statusHideToken;   // 提示自动隐藏的延迟任务句柄
+    private View closeBtn;              // 右上角关闭开关
+    private IconDrawable recIcon;        // 录屏按钮的 ▶/■ 图标
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -150,48 +157,49 @@ public class ToolsOverlayService extends Service {
 
         card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(12), dp(10), dp(12), dp(10));
-        // 卡片背景降到 25% 不透：盖在画面上只是淡淡一层，不挡剧
-        card.setBackground(round(0x40101418, 18, 0x33FFFFFF));
-        // 卡片最小宽度：保证四按钮横向一排时各自 sub 标签不折行
-        card.setMinimumWidth(dp(460));
-        // 给卡片一个最小宽度，四个按钮才能均匀撑开、sub 标签不被挤成竖排
-        card.setMinimumWidth(dp(430));
+        card.setPadding(dp(10), dp(10), dp(10), dp(10));
+        // 外框背景降到 18% 不透：只是一层淡淡的框，把四个小框"框"起来，不挡画面
+        card.setBackground(round(0x2E101418, 16, 0x22FFFFFF));
+        // 外框紧贴四个小框（靠 padding 控制边距，不再单独写"工具"标题）
+        card.setMinimumWidth(dp(440));
 
-        // 标题行
-        TextView title = new TextView(this);
-        title.setText("工具");
-        title.setTextColor(0xFFFFFFFF);
-        title.setTextSize(15);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        card.addView(title);
+        // 顶部一行：状态提示（默认 GONE）+ 关闭开关（右侧，随时可关掉工具条）
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
 
         status = new TextView(this);
         status.setText("");
-        status.setTextColor(0xE8FFFFFF);
+        status.setTextColor(0x99FFFFFF);
         status.setTextSize(12);
         status.setSingleLine(true);
         status.setEllipsize(android.text.TextUtils.TruncateAt.END);
         status.setPadding(dp(8), dp(3), dp(8), dp(3));
         status.setVisibility(View.GONE);
-        status.setBackground(round(0x66000000, 12, 0x33FFFFFF));
+        status.setBackground(round(0x55000000, 12, 0x22FFFFFF));
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        slp.topMargin = dp(8);
-        card.addView(status, slp);
+        status.setGravity(Gravity.CENTER);
+        topRow.addView(status, slp);
+
+        closeBtn = mkCloseBtn();
+        topRow.addView(closeBtn);
+        LinearLayout.LayoutParams trlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        trlp.bottomMargin = dp(8);
+        card.addView(topRow, trlp);
 
         // 四按钮一排（横向工具条）：各自铺满卡片宽度、右侧小标签说明
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        rlp.topMargin = dp(10);
         card.addView(row, rlp);
 
-        btnMem = mkBtn("清内存", "释放后台", 0xFF4EA1FF, this::onMem);
-        btnRec = mkBtn("录屏", "开 / 停", 0xFF4ADE80, this::onRec);
-        btnReboot = mkBtn("重启", "热重启", 0xFF4EA1FF, this::onReboot);
-        btnOff = mkBtn("关机", "待机", 0xFFFFB454, this::onOff);
+        btnMem = mkBtn("清内存", "释放后台", 0x998FB8E0, this::onMem);
+        btnRec = mkBtn("录屏", "开 / 停", 0x99A0E0B0, this::onRec);
+        btnReboot = mkBtn("重启", "热重启", 0x998FB8E0, this::onReboot);
+        btnOff = mkBtn("关机", "待机", 0x99E0C08F, this::onOff);
 
         row.addView(btnMem, qtr());
         row.addView(btnRec, qtr());
@@ -221,37 +229,54 @@ public class ToolsOverlayService extends Service {
     }
 
     /** 卡片按钮：可获焦 + 焦点高亮，遥控器左右选、OK 触发。
-     *  默认（无焦点）按钮近乎透明，只在获得焦点/按下时才亮，盖在画面上不挡剧。 */
+     *  默认（无焦点）按钮近乎透明，只在获得焦点/按下时才亮，盖在画面上不挡剧。
+     *  ① 淡色字体（主 0x99 / 副 0x88 白，不夺目）② 文字在框内水平居中 ③ 录屏按钮带 ▶/■ 图标。 */
     private View mkBtn(String t, String sub, int accent, Runnable act) {
         LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(12), dp(10), dp(12), dp(10));
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER);
+        box.setPadding(dp(10), dp(8), dp(10), dp(8));
         box.setClickable(true);
         box.setFocusable(true);
         box.setFocusableInTouchMode(false);
         int ac = accent;
-        // 无焦点：透明底 + 仅亮色描边；焦点：底提亮 18% + 高亮描边
-        box.setBackground(round(0x10FFFFFF, 12, 0x66FFFFFF));
+        // 无焦点：透明底 + 淡描边；焦点：底提亮 + 高亮描边
+        box.setBackground(round(0x10FFFFFF, 12, 0x44FFFFFF));
         box.setOnFocusChangeListener((v, f) ->
                 v.setBackground(round(f ? 0x30FFFFFF : 0x10FFFFFF, 12,
-                        f ? ac : 0x66FFFFFF)));
+                        f ? ac : 0x44FFFFFF)));
+
+        // ③ 录屏按钮：根据当前录态在文字前显示 ▶（开始）或 ■（停止）
+        if ("录屏".equals(t)) {
+            recIcon = new IconDrawable(getResources());
+            recIcon.setRecorded(recOn);
+            // Drawable 不能直接 addView，包进一个 View 当背景来画
+            View iconView = new View(this);
+            int iw = recIcon.getIntrinsicWidth(), ih = recIcon.getIntrinsicHeight();
+            iconView.setBackground(recIcon);
+            LinearLayout.LayoutParams iclp = new LinearLayout.LayoutParams(iw, ih);
+            iclp.rightMargin = dp(6);
+            iclp.gravity = Gravity.CENTER_VERTICAL;
+            box.addView(iconView, iclp);
+        }
 
         TextView a = new TextView(this);
         a.setText(t);
-        a.setTextColor(0xEFFFFFFF);   // 白色为主、稍透明，不刺眼
-        a.setTextSize(16);
-        a.setTypeface(Typeface.DEFAULT_BOLD);
+        a.setTextColor(0x99FFFFFF);   // 淡色、不夺目
+        a.setTextSize(15);
+        a.setGravity(Gravity.CENTER);
         box.addView(a);
 
         TextView b = new TextView(this);
         b.setText(sub);
-        b.setTextColor(0xB0FFFFFF);
+        b.setTextColor(0x88FFFFFF);   // 副标签更淡
         b.setTextSize(10);
         b.setSingleLine(true);
         b.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        blp.topMargin = dp(1);
+        blp.leftMargin = dp(6);
+        blp.gravity = Gravity.CENTER_VERTICAL;
         box.addView(b, blp);
 
         // 遥控器 OK：焦点在按钮上按中键/确定键时触发（触摸点按同样走这里）
@@ -291,11 +316,8 @@ public class ToolsOverlayService extends Service {
 
     private void refreshRecState() {
         recOn = OverlayService.isRecording() ? 1 : 0;
-        if (btnRec != null) {
-            final TextView tv = (TextView) ((LinearLayout) btnRec).getChildAt(0);
-            tv.setText(recOn == 1 ? "录屏中" : "录屏");
-            final TextView sub = (TextView) ((LinearLayout) btnRec).getChildAt(1);
-            sub.setText(recOn == 1 ? "点按停止" : "点按开始");
+        if (recIcon != null) {
+            recIcon.setRecorded(recOn == 1 ? 1 : 0);   // 图标随录态在 ▶（未录）/ ■（录中）间切换
         }
     }
 
@@ -318,6 +340,121 @@ public class ToolsOverlayService extends Service {
                 refreshRecState();
             });
         }, "tool-rec").start();
+    }
+
+    /** 右上角关闭开关：点它把工具条收掉，随时能再打开（MainActivity 会按 config 重拉起） */
+    private View mkCloseBtn() {
+        TextView c = new TextView(this);
+        c.setText("✕");
+        c.setTextColor(0x99FFFFFF);
+        c.setTextSize(13);
+        c.setPadding(dp(8), dp(4), dp(8), dp(4));
+        c.setFocusable(true);
+        c.setClickable(true);
+        c.setBackground(round(0x10FFFFFF, 10, 0x33FFFFFF));
+        c.setOnFocusChangeListener((v, f) ->
+                v.setBackground(round(f ? 0x30FFFFFF : 0x10FFFFFF, 10,
+                        f ? 0x99FFFFFF : 0x33FFFFFF)));
+        c.setOnKeyListener((v, code, ev) -> {
+            if (ev.getAction() == KeyEvent.ACTION_DOWN
+                    && (code == KeyEvent.KEYCODE_DPAD_CENTER
+                        || code == KeyEvent.KEYCODE_ENTER
+                        || code == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
+                onToggleClose();
+                return true;
+            }
+            return false;
+        });
+        c.setOnClickListener(v -> onToggleClose());
+        return c;
+    }
+
+    /** 关闭/重新展开工具条。关闭即把卡片移走；再点（若还留着开关）则重新展开。 */
+    private void onToggleClose() {
+        if (card == null) return;
+        postStatus("工具条已关闭");
+        hideCard();
+    }
+
+    private void hideCard() {
+        if (wm == null) return;
+        if (card != null) {
+            try {
+                wm.removeView(card);
+            } catch (Throwable ignored) {
+            }
+            card = null;
+        }
+        dismissConfirm();
+        // 收掉后 2s 再停 service；这样用户误触可短暂恢复
+        ui.postDelayed(ToolsOverlayService.this::onCardHidden, 2000);
+    }
+
+    private void onCardHidden() {
+        stop(this);
+    }
+
+    /**
+     * 手绘的录制状态图标：未录时画「▶ 开始」三角形，录中时画「■ 停止」方块。
+     * 用 {@link PathShape}（三角）/ {@link RoundRectShape}（方块）两个 Shape 做 PathShape
+     * 太绕，这里直接画两个 Path 切换，颜色淡（0x99 白）不夺目。
+     */
+    private static class IconDrawable extends android.graphics.drawable.Drawable {
+        private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final Path tri = new Path();
+        private final Path rect = new Path();
+        private int recorded;
+        private final int w, h;
+
+        IconDrawable(android.content.res.Resources r) {
+            int u = (int) (r.getDisplayMetrics().density * 2);
+            w = u * 9; h = u * 9;
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            p.setColor(0x99FFFFFF);
+            // 三角 ▶：在 9u×9u 视口内居中
+            float cx = u * 4.5f, cy = u * 4.5f;
+            float t = u * 2.6f;
+            tri.moveTo(cx - t * 0.7f, cy - t);
+            tri.lineTo(cx - t * 0.7f, cy + t);
+            tri.lineTo(cx + t, cy);
+            tri.close();
+            // 方块 ■
+            float s = u * 2.0f;
+            rect.addRect(cx - s, cy - s, cx + s, cy + s, Path.Direction.CW);
+        }
+
+        void setRecorded(int on) {
+            recorded = on;
+            invalidateSelf();
+        }
+
+        @Override
+        public void draw(android.graphics.Canvas c) {
+            c.drawPath((recorded == 1) ? rect : tri, p);
+        }
+
+        @Override
+        public int getIntrinsicWidth() {
+            return w;
+        }
+
+        @Override
+        public int getIntrinsicHeight() {
+            return h;
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+        }
+
+        @Override
+        public void setColorFilter(android.graphics.ColorFilter cf) {
+        }
+
+        @Override
+        public int getOpacity() {
+            return android.graphics.PixelFormat.TRANSLUCENT;
+        }
     }
 
     private void onReboot() {
