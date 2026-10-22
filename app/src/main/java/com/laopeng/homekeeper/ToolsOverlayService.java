@@ -161,13 +161,16 @@ public class ToolsOverlayService extends Service {
         // 外框背景降到 18% 不透：只是一层淡淡的框，把四个小框"框"起来，不挡画面
         card.setBackground(round(0x2E101418, 14, 0x22FFFFFF));
 
-        // 顶部一行：关闭开关（最左，随时可关）+ 状态提示（默认 GONE，撑满剩余宽度）
-        LinearLayout topRow = new LinearLayout(this);
-        topRow.setOrientation(LinearLayout.HORIZONTAL);
-        topRow.setGravity(Gravity.CENTER_VERTICAL);
+        // 单行工具条：✕（最左，与四个小框同一行、平齐）+ 状态提示（默认 GONE，撑中间）+ 四个小框
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
 
         closeBtn = mkCloseBtn();
-        topRow.addView(closeBtn);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(dp(54), dp(54));
+        clp.rightMargin = dp(6);
+        clp.gravity = Gravity.CENTER;
+        row.addView(closeBtn, clp);
 
         status = new TextView(this);
         status.setText("");
@@ -181,18 +184,10 @@ public class ToolsOverlayService extends Service {
         status.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        slp.leftMargin = dp(6);
-        topRow.addView(status, slp);
-        LinearLayout.LayoutParams trlp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        trlp.bottomMargin = dp(6);
-        card.addView(topRow, trlp);
+        status.setGravity(Gravity.CENTER);
+        row.addView(status, slp);
 
         // 四个小框：定宽等高、四个完全一样大；副标签已去掉，只留主文字
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER);
-
         btnMem = mkBtn("清内存", 0x998FB8E0, this::onMem, false);
         btnRec = mkBtn("录屏", 0x99A0E0B0, this::onRec, true);
         btnReboot = mkBtn("重启", 0x998FB8E0, this::onReboot, false);
@@ -220,7 +215,7 @@ public class ToolsOverlayService extends Service {
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.END;
         lp.x = dp(8);           // 距右边缘更近，尽量靠右上
-        lp.y = dp(12);          // 距顶更近
+        lp.y = dp(8);          // 单行后卡片更矮，距顶也可再近
 
         wm.addView(card, lp);
 
@@ -332,8 +327,8 @@ public class ToolsOverlayService extends Service {
         TextView c = new TextView(this);
         c.setText("✕");
         c.setTextColor(0x99FFFFFF);
-        c.setTextSize(13);
-        c.setPadding(dp(8), dp(4), dp(8), dp(4));
+        c.setTextSize(15);
+        c.setGravity(Gravity.CENTER);
         c.setFocusable(true);
         c.setClickable(true);
         c.setBackground(round(0x10FFFFFF, 10, 0x33FFFFFF));
