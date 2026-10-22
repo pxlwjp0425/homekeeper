@@ -209,9 +209,9 @@ public class ToolsOverlayService extends Service {
                 Build.VERSION.SDK_INT >= 26
                         ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                         : WindowManager.LayoutParams.TYPE_PHONE,
-                // 不模态、不影响下层焦点，但卡片自身可获焦可点 —— 遥控器/触摸都能操作
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                // 去掉 NOT_FOCUSABLE → 遥控器方向键能把焦点导航进工具条；
+                // 保留 NOT_TOUCH_MODAL → 点中卡片不挡 CIBN 触摸；焦点链保证按方向键能切回 CIBN
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.END;
         lp.x = dp(8);           // 距右边缘更近，尽量靠右上
@@ -221,6 +221,9 @@ public class ToolsOverlayService extends Service {
 
         // 初始探测录屏态（查 tvrecorder 的 status 太慢，先用本地静态量；录屏 App 会广播 REC_STATE）
         refreshRecState();
+
+        // 焦点链：焦点在工具条最后一个按钮时，按方向键把焦点交回给底层 CIBN
+        setupFocusChain();
     }
 
     /** 卡片小框：可获焦 + 焦点高亮，遥控器左右选、OK 触发。
@@ -290,6 +293,42 @@ public class ToolsOverlayService extends Service {
         g.setCornerRadius(dp(radius));
         g.setStroke(1, stroke);
         return g;
+    }
+
+    /** 焦点链：让遥控器方向键能在 CIBN ↔ 工具条之间自然流转。
+     *  焦点在工具条时，按「下」或「左」就把焦点交回给底层 CIBN（往左下走都是"离开"方向），
+     *  其余方向键（上/右）在工具条内部导航。这样看剧时遥控焦点不丢，又能随时调工具条。
+     *  额外处理：焦点落在 card 本身（无子按钮被选中）时，OK 键默认触发「清内存」。 */
+    private void setupFocusChain() {
+        card.setFocusable(true);
+        card.setFocusableInTouchMode(true);
+        // 按「下 / 左」离开工具条
+        final int[] leaveCodes = {
+                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT
+        };
+        card.setOnKeyListener((v, code, ev) -> {
+            if (ev.getAction() != KeyEvent.ACTION_DOWN) return false;
+            for (int c : leaveCodes) {
+                if (code == c) {
+                    ui.postDelayed(() -> { if (card != null) card.clearFocus(); }, 0);
+                    postStatus("回到酷喵");
+                    return true;
+                }
+            }
+            // 焦点在 card 自身（未落到子按钮）时，OK/中键默认触发清内存
+            if ((code == KeyEvent.KEYCODE_DPAD_CENTER
+                    || code == KeyEvent.KEYCODE_ENTER
+                    || code == KeyEvent.KEYCODE_NUMPAD_ENTER)
+                    && v.hasFocus()) {
+                onMem();
+                return true;
+            }
+            return false;
+        });
+        // 初始焦点落到工具条第一个按钮，遥控器一按方向键即可进入
+        ui.postDelayed(() -> {
+            if (closeBtn != null) closeBtn.requestFocus();
+        }, 100);
     }
 
     // ---------------- 动作 ----------------
