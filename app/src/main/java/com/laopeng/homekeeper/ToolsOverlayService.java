@@ -157,16 +157,17 @@ public class ToolsOverlayService extends Service {
 
         card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(10), dp(10), dp(10), dp(10));
+        card.setPadding(dp(8), dp(8), dp(8), dp(8));
         // 外框背景降到 18% 不透：只是一层淡淡的框，把四个小框"框"起来，不挡画面
-        card.setBackground(round(0x2E101418, 16, 0x22FFFFFF));
-        // 外框紧贴四个小框（靠 padding 控制边距，不再单独写"工具"标题）
-        card.setMinimumWidth(dp(440));
+        card.setBackground(round(0x2E101418, 14, 0x22FFFFFF));
 
-        // 顶部一行：状态提示（默认 GONE）+ 关闭开关（右侧，随时可关掉工具条）
+        // 顶部一行：关闭开关（最左，随时可关）+ 状态提示（默认 GONE，撑满剩余宽度）
         LinearLayout topRow = new LinearLayout(this);
         topRow.setOrientation(LinearLayout.HORIZONTAL);
         topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        closeBtn = mkCloseBtn();
+        topRow.addView(closeBtn);
 
         status = new TextView(this);
         status.setText("");
@@ -177,37 +178,36 @@ public class ToolsOverlayService extends Service {
         status.setPadding(dp(8), dp(3), dp(8), dp(3));
         status.setVisibility(View.GONE);
         status.setBackground(round(0x55000000, 12, 0x22FFFFFF));
+        status.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        status.setGravity(Gravity.CENTER);
+        slp.leftMargin = dp(6);
         topRow.addView(status, slp);
-
-        closeBtn = mkCloseBtn();
-        topRow.addView(closeBtn);
         LinearLayout.LayoutParams trlp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        trlp.bottomMargin = dp(8);
+        trlp.bottomMargin = dp(6);
         card.addView(topRow, trlp);
 
-        // 四按钮一排（横向工具条）：各自铺满卡片宽度、右侧小标签说明
+        // 四个小框：定宽等高、四个完全一样大；副标签已去掉，只留主文字
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+
+        btnMem = mkBtn("清内存", 0x998FB8E0, this::onMem, false);
+        btnRec = mkBtn("录屏", 0x99A0E0B0, this::onRec, true);
+        btnReboot = mkBtn("重启", 0x998FB8E0, this::onReboot, false);
+        btnOff = mkBtn("关机", 0x99E0C08F, this::onOff, false);
+
+        row.addView(btnMem, eqBox());
+        row.addView(btnRec, eqBox());
+        row.addView(btnReboot, eqBox());
+        row.addView(btnOff, eqBox());
+
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         card.addView(row, rlp);
 
-        btnMem = mkBtn("清内存", "释放后台", 0x998FB8E0, this::onMem);
-        btnRec = mkBtn("录屏", "开 / 停", 0x99A0E0B0, this::onRec);
-        btnReboot = mkBtn("重启", "热重启", 0x998FB8E0, this::onReboot);
-        btnOff = mkBtn("关机", "待机", 0x99E0C08F, this::onOff);
-
-        row.addView(btnMem, qtr());
-        row.addView(btnRec, qtr());
-        row.addView(btnReboot, qtr());
-        row.addView(btnOff, qtr());
-
-        // 卡片贴右上角放。盒子 1080p 宽 1920px、override 密度 220（dp 系数 1.375）。
-        // 直接 px 定位最稳，避开 dp 换算误差。
+        // 卡片贴右上角放，尽量靠右上。盒子 1080p、override 密度 220（dp 系数 1.375）
         lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -219,8 +219,8 @@ public class ToolsOverlayService extends Service {
                         | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.END;
-        lp.x = dp(16);          // 距右边缘 16dp
-        lp.y = dp(24);          // 距顶 24dp
+        lp.x = dp(8);           // 距右边缘更近，尽量靠右上
+        lp.y = dp(12);          // 距顶更近
 
         wm.addView(card, lp);
 
@@ -228,34 +228,32 @@ public class ToolsOverlayService extends Service {
         refreshRecState();
     }
 
-    /** 卡片按钮：可获焦 + 焦点高亮，遥控器左右选、OK 触发。
-     *  默认（无焦点）按钮近乎透明，只在获得焦点/按下时才亮，盖在画面上不挡剧。
-     *  ① 淡色字体（主 0x99 / 副 0x88 白，不夺目）② 文字在框内水平居中 ③ 录屏按钮带 ▶/■ 图标。 */
-    private View mkBtn(String t, String sub, int accent, Runnable act) {
+    /** 卡片小框：可获焦 + 焦点高亮，遥控器左右选、OK 触发。
+     *  定宽等高（四个一样大）、文字居中、淡色不夺目；录屏框带 ▶/■ 图标。 */
+    private View mkBtn(String t, int accent, Runnable act, boolean isRec) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.HORIZONTAL);
         box.setGravity(Gravity.CENTER);
-        box.setPadding(dp(10), dp(8), dp(10), dp(8));
+        box.setPadding(dp(8), dp(6), dp(8), dp(6));
         box.setClickable(true);
         box.setFocusable(true);
         box.setFocusableInTouchMode(false);
         int ac = accent;
         // 无焦点：透明底 + 淡描边；焦点：底提亮 + 高亮描边
-        box.setBackground(round(0x10FFFFFF, 12, 0x44FFFFFF));
+        box.setBackground(round(0x10FFFFFF, 10, 0x44FFFFFF));
         box.setOnFocusChangeListener((v, f) ->
-                v.setBackground(round(f ? 0x30FFFFFF : 0x10FFFFFF, 12,
+                v.setBackground(round(f ? 0x30FFFFFF : 0x10FFFFFF, 10,
                         f ? ac : 0x44FFFFFF)));
 
-        // ③ 录屏按钮：根据当前录态在文字前显示 ▶（开始）或 ■（停止）
-        if ("录屏".equals(t)) {
+        // 录屏框：根据当前录态在文字前显示 ▶（开始）或 ■（停止）
+        if (isRec) {
             recIcon = new IconDrawable(getResources());
             recIcon.setRecorded(recOn);
-            // Drawable 不能直接 addView，包进一个 View 当背景来画
             View iconView = new View(this);
             int iw = recIcon.getIntrinsicWidth(), ih = recIcon.getIntrinsicHeight();
             iconView.setBackground(recIcon);
             LinearLayout.LayoutParams iclp = new LinearLayout.LayoutParams(iw, ih);
-            iclp.rightMargin = dp(6);
+            iclp.rightMargin = dp(5);
             iclp.gravity = Gravity.CENTER_VERTICAL;
             box.addView(iconView, iclp);
         }
@@ -265,19 +263,8 @@ public class ToolsOverlayService extends Service {
         a.setTextColor(0x99FFFFFF);   // 淡色、不夺目
         a.setTextSize(15);
         a.setGravity(Gravity.CENTER);
+        a.setSingleLine(true);
         box.addView(a);
-
-        TextView b = new TextView(this);
-        b.setText(sub);
-        b.setTextColor(0x88FFFFFF);   // 副标签更淡
-        b.setTextSize(10);
-        b.setSingleLine(true);
-        b.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        blp.leftMargin = dp(6);
-        blp.gravity = Gravity.CENTER_VERTICAL;
-        box.addView(b, blp);
 
         // 遥控器 OK：焦点在按钮上按中键/确定键时触发（触摸点按同样走这里）
         box.setOnKeyListener((v, code, ev) -> {
@@ -294,13 +281,11 @@ public class ToolsOverlayService extends Service {
         return box;
     }
 
-    /** 横向工具条里每个按钮占 1/4 宽（权重 1），高度随内容；右侧留 6dp 间距 */
-    private LinearLayout.LayoutParams qtr() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+    /** 四个小框等宽等高：固定 110dp 宽、54dp 高，互相 6dp 间距，保证一样大 */
+    private LinearLayout.LayoutParams eqBox() {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(110), dp(54));
         p.rightMargin = dp(6);
-        p.topMargin = dp(6);
-        p.bottomMargin = dp(2);
+        p.gravity = Gravity.CENTER;
         return p;
     }
 
